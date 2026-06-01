@@ -100,14 +100,21 @@
 from fastapi import APIRouter, Request
 
 from app.core.config import VERIFY_TOKEN
-from app.services.ai_response_service import generate_ai_answer
+from app.services.support_flow_service import handle_support_message
 from app.services.chat_service import save_chat
+from app.services.user_service import get_or_create_user
 from app.services.whatsapp_service import send_whatsapp_message
 
 router = APIRouter(
     prefix="/webhook",
     tags=["WhatsApp"]
 )
+
+
+def _normalize_name(name: str, phone_number: str) -> str:
+    if not name or name == phone_number:
+        return "sir/ma'am"
+    return name
 
 
 @router.get("/")
@@ -152,9 +159,10 @@ async def receive_message(request: Request):
         print("Sender:", sender)
         print("Message:", text_body)
 
-        answer = generate_ai_answer(text_body)
-        send_whatsapp_message(sender, answer)
-        save_chat(sender, text_body, answer)
+        user = get_or_create_user(sender)
+        answer = handle_support_message(user, text_body)
+        send_whatsapp_message(user.phone_number, answer)
+        save_chat(user.phone_number, text_body, answer)
     except Exception as e:
         print("ERROR:", e)
         return {"status": "error", "detail": str(e)}

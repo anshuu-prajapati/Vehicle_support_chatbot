@@ -2,7 +2,7 @@ from app.services.rag_service import ask_question
 from app.ai.groq_llm import generate_response
 
 
-def generate_ai_answer(query):
+def generate_ai_answer(query, history: str = None):
 
     rag_result = ask_question(query)
 
