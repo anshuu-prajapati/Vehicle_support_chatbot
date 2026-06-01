@@ -97,6 +97,8 @@
 
 
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -111,6 +113,13 @@ from app.services.whatsapp_service import send_whatsapp_message
 router = APIRouter(
     prefix="/webhook",
     tags=["WhatsApp"]
+)
+
+logger = logging.getLogger("app.webhook")
+
+TECHNICAL_ERROR_MESSAGE = (
+    "Maaf kijiye, kuch technical issue aa gaya hai.\n"
+    "Kripya dobara try kare."
 )
 
 
@@ -137,19 +146,22 @@ def verify_webhook(
 @router.post("/")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
-    print(body)
+    sender = None
 
     try:
         entry = body.get("entry")
         if not entry or not isinstance(entry, list):
+            logger.debug("Webhook ignored because entry was missing or invalid", extra={"body": body})
             return {"status": "ignored"}
 
         changes = entry[0].get("changes") if entry[0] else None
         if not changes or not isinstance(changes, list):
+            logger.debug("Webhook ignored because changes were missing or invalid", extra={"body": body})
             return {"status": "ignored"}
 
         value = changes[0].get("value")
         if not value or "messages" not in value:
+            logger.debug("Webhook ignored because no messages were present", extra={"body": body})
             return {"status": "ignored"}
 
         message = value["messages"][0]
@@ -157,18 +169,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         text_body = message.get("text", {}).get("body")
 
         if not sender or not text_body:
+            logger.debug("Webhook ignored because sender or text was missing", extra={"message": message})
             return {"status": "ignored"}
 
-        print("Sender:", sender)
-        print("Message:", text_body)
-
+        logger.info("Received incoming WhatsApp message", extra={"sender": sender, "text": text_body})
         user = get_or_create_user(sender, db=db)
         state_manager = StateManager(db)
         answer = handle_support_message(user, text_body, state_manager)
         send_whatsapp_message(user.phone_number, answer)
         save_chat(user.phone_number, text_body, answer)
-    except Exception as e:
-        print("ERROR:", e)
-        return {"status": "error", "detail": str(e)}
+    except Exception as exc:
+        logger.exception("Unexpected error processing webhook", exc_info=exc)
+        if sender:
+            try:
+                send_whatsapp_message(sender, TECHNICAL_ERROR_MESSAGE)
+            except Exception:
+                logger.exception("Failed to send technical error message to sender")
+        return {"status": "error", "detail": str(exc)}
 
     return {"status": "ok"}
