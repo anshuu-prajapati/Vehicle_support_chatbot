@@ -7,14 +7,16 @@ def save_chat(
     user_message,
     bot_response
 ):
-
     db = SessionLocal()
 
-    chat = ChatMessage(
-        phone_number=phone_number,
-        user_message=user_message,
-        bot_response=bot_response
-    )
+    try:
+        chat = ChatMessage(
+            phone_number=phone_number,
+            user_message=user_message,
+            bot_response=bot_response
+        )
 
-    db.add(chat)
-    db.commit()
+        db.add(chat)
+        db.commit()
+    finally:
+        db.close()

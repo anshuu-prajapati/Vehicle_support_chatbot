@@ -97,9 +97,12 @@
 
 
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
 
 from app.core.config import VERIFY_TOKEN
+from app.db.dependencies import get_db
+from app.services.state_manager import StateManager
 from app.services.support_flow_service import handle_support_message
 from app.services.chat_service import save_chat
 from app.services.user_service import get_or_create_user
@@ -132,7 +135,7 @@ def verify_webhook(
 
 
 @router.post("/")
-async def receive_message(request: Request):
+async def receive_message(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
     print(body)
 
@@ -159,8 +162,9 @@ async def receive_message(request: Request):
         print("Sender:", sender)
         print("Message:", text_body)
 
-        user = get_or_create_user(sender)
-        answer = handle_support_message(user, text_body)
+        user = get_or_create_user(sender, db=db)
+        state_manager = StateManager(db)
+        answer = handle_support_message(user, text_body, state_manager)
         send_whatsapp_message(user.phone_number, answer)
         save_chat(user.phone_number, text_body, answer)
     except Exception as e:
