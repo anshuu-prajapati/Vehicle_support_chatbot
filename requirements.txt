@@ -1,0 +1,37 @@
+# FastAPI Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# HTTP Client
+httpx==0.26.0
+requests==2.31.0
+
+# Retry Logic
+tenacity==8.2.3
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# Redis (Optional)
+redis==5.0.1
+
+# AI/ML
+openai==1.10.0
+qdrant-client==1.7.3
+
+# Groq LLM
+groq==0.4.2
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+
+# Logging
+structlog==24.1.0
