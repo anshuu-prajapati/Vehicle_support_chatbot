@@ -11,6 +11,6 @@ class FleetConversation(Base):
     phone = Column(String(20), nullable=False, index=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=True)
     state = Column(String(100), nullable=False)
-    metadata = Column(JSON, nullable=False, default=dict)
+    metadata_json = Column(JSON, nullable=False, default=dict)
 
     vehicle = relationship("Vehicle", back_populates="conversations")
