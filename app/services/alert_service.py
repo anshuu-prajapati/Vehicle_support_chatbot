@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
 from app.db.models import Alert, VehicleStatus
-from app.services.conversation_state_service import update_state
+from app.services.conversation_state_service import (
+    update_state,
+    FLEET_ALERT_CREATED,
+)
 from app.services.whatsapp_service import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
@@ -199,7 +202,7 @@ def send_alert_to_manager(alert: Alert, db: Session = None) -> bool:
     last_gps_time = _format_last_gps_time(status.last_gps_time) if status else "Unknown"
     message = _build_alert_message(vehicle, status or type("S", (), {"location": None})(), driver_name, last_gps_time)
 
-    update_state(contact_phone, "alert_action", _build_alert_context(alert))
+    update_state(contact_phone, FLEET_ALERT_CREATED, _build_alert_context(alert))
     send_whatsapp_message(contact_phone, message)
     logger.info(
         "Sent WhatsApp fleet alert to manager %s for vehicle_id=%s",

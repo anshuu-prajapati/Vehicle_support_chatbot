@@ -3,7 +3,14 @@ from app.services.conversation_state_service import (
     get_state,
     create_state,
     update_state,
-    reset_state
+    reset_state,
+    FLEET_ALERT_CREATED,
+    WAITING_MANAGER_REPLY,
+    WAITING_NEW_CONTACT,
+    CONTACT_DRIVER,
+    DRIVER_INVESTIGATION,
+    SUMMARY_SENT,
+    CLOSED,
 )
 from app.services.ticket_service import create_ticket
 from app.services.user_service import get_or_create_user, normalize_phone_number
@@ -108,6 +115,132 @@ def _handle_collect_contact_phone(user, state, text_body: str) -> str:
     )
 
 
+def _handle_fleet_alert_created_state(user, state, normalized, text_body: str) -> str:
+    context = state.context_json or {}
+
+    if normalized in ["1", "1.", "i am responsible", "i am responsible."]:
+        update_state(user.phone_number, WAITING_MANAGER_REPLY, context)
+        return (
+            "Samajh gaya. Aapko is alert ke liye responsible maana gaya hai.\n"
+            "Kripya agar aapko koi update mile toh hume bataiye."
+        )
+
+    if normalized in ["2", "2.", "contact another person", "contact another person."]:
+        update_state(user.phone_number, WAITING_NEW_CONTACT, context)
+        return "Kripya naye contact ka WhatsApp phone number bhejiye."
+
+    if normalized in ["3", "3.", "contact drivers directly", "contact drivers directly."]:
+        driver_phone = context.get("driver_phone")
+        if not driver_phone:
+            update_state(user.phone_number, WAITING_NEW_CONTACT, context)
+            return (
+                "Driver ka number system mein available nahi hai.\n"
+                "Kripya driver ka phone number bhejiye."
+            )
+
+        contact_message = _build_contact_message(context)
+        send_whatsapp_message(driver_phone, contact_message)
+        update_state(user.phone_number, CONTACT_DRIVER, context)
+        return "Driver ko alert bhej diya gaya hai. Ab driver se investigation karwayein."
+
+    return (
+        "Kripya sirf 1, 2, ya 3 mein reply dein.\n"
+        "1. I am responsible\n"
+        "2. Contact another person\n"
+        "3. Contact drivers directly"
+    )
+
+
+def _handle_waiting_new_contact_state(user, state, text_body: str) -> str:
+    context = state.context_json or {}
+    contact_phone = normalize_phone_number(text_body)
+    if not contact_phone or len(contact_phone) < 8:
+        return "Kripya valid phone number bhejein, country code ke saath."
+
+    updated_context = {**context, "contact_phone": contact_phone}
+    contact_message = _build_contact_message(updated_context)
+    send_whatsapp_message(contact_phone, contact_message)
+
+    next_state = CONTACT_DRIVER if contact_phone == context.get("driver_phone") else WAITING_MANAGER_REPLY
+    update_state(user.phone_number, next_state, updated_context)
+
+    return (
+        "Contact person ko alert bhej diya gaya hai.\n"
+        "Aap agar aur koi action lena chahte hain toh bataiye."
+    )
+
+
+def _handle_contact_driver_state(user, state, text_body: str) -> str:
+    normalized = _normalize_text(text_body)
+    context = state.context_json or {}
+
+    if normalized in ["investigate", "investigation", "driver investigating", "driver investigate"]:
+        update_state(user.phone_number, DRIVER_INVESTIGATION, context)
+        return "Driver se investigation shuru karwai gayi hai. Kripya jaise hi update mile bataiye."
+
+    if normalized in ["summary", "update", "report", "status"]:
+        update_state(user.phone_number, SUMMARY_SENT, context)
+        return "Summary note kar liya gaya hai. Aapka update send kar diya gaya hai."
+
+    if normalized in ["close", "closed", "resolved", "done", "complete"]:
+        update_state(user.phone_number, CLOSED, context)
+        return "Fleet alert closed. Dhanyavaad."
+
+    return (
+        "Driver ko contact kar diya gaya hai.\n"
+        "Aapka update note kar liya gaya hai.\n"
+        "Agar issue close ho gaya ho toh 'closed' bhejiye."
+    )
+
+
+def _handle_waiting_manager_reply_state(user, state, text_body: str) -> str:
+    normalized = _normalize_text(text_body)
+    context = state.context_json or {}
+
+    if normalized in ["close", "closed", "resolved", "done", "complete"]:
+        update_state(user.phone_number, CLOSED, context)
+        return "Alert closed. Dhanyavaad."
+
+    if "summary" in normalized or "update" in normalized or "investigation" in normalized:
+        update_state(user.phone_number, SUMMARY_SENT, context)
+        return "Summary received. Notification bhej diya gaya hai."
+
+    update_state(user.phone_number, WAITING_MANAGER_REPLY, context)
+    return (
+        "Message note kar liya gaya hai.\n"
+        "Kripya zarurat padne par aur update bhejiye."
+    )
+
+
+def _handle_driver_investigation_state(user, state, text_body: str) -> str:
+    normalized = _normalize_text(text_body)
+    context = state.context_json or {}
+
+    if normalized in ["close", "closed", "resolved", "done", "complete"]:
+        update_state(user.phone_number, CLOSED, context)
+        return "Driver investigation complete. Alert closed."
+
+    if "summary" in normalized or "update" in normalized:
+        update_state(user.phone_number, SUMMARY_SENT, context)
+        return "Summary received. Dhanyavaad."
+
+    update_state(user.phone_number, DRIVER_INVESTIGATION, context)
+    return "Driver investigation chal rahi hai. Jab extra update ho tab bhejiye."
+
+
+def _handle_summary_sent_state(user, state, text_body: str) -> str:
+    normalized = _normalize_text(text_body)
+
+    if normalized in ["close", "closed", "resolved", "done", "complete"]:
+        update_state(user.phone_number, CLOSED, state.context_json or {})
+        return "Alert closed. Dhanyavaad."
+
+    return (
+        "Summary already sent.\n"
+        "Agar issue ab close ho gaya hai toh 'closed' likh kar bhejiye."
+    )
+
+
 def handle_support_message(user, text_body: str) -> str:
     normalized = _normalize_text(text_body)
 
@@ -124,6 +257,24 @@ def handle_support_message(user, text_body: str) -> str:
 
     if state.current_step == "alert_action":
         return _handle_alert_action_state(user, state, normalized, text_body)
+
+    if state.current_step == FLEET_ALERT_CREATED:
+        return _handle_fleet_alert_created_state(user, state, normalized, text_body)
+
+    if state.current_step == WAITING_NEW_CONTACT:
+        return _handle_waiting_new_contact_state(user, state, text_body)
+
+    if state.current_step == CONTACT_DRIVER:
+        return _handle_contact_driver_state(user, state, text_body)
+
+    if state.current_step == WAITING_MANAGER_REPLY:
+        return _handle_waiting_manager_reply_state(user, state, text_body)
+
+    if state.current_step == DRIVER_INVESTIGATION:
+        return _handle_driver_investigation_state(user, state, text_body)
+
+    if state.current_step == SUMMARY_SENT:
+        return _handle_summary_sent_state(user, state, text_body)
 
     if state.current_step == "collect_contact_phone":
         return _handle_collect_contact_phone(user, state, text_body)
