@@ -1,11 +1,19 @@
+import logging
+
 from app.db.database import SessionLocal
 from app.db.models.conversation_state import ConversationState
+
+logger = logging.getLogger(__name__)
 
 ASK_HELP_TYPE = "ask_help_type"
 COLLECT_PROBLEM_DETAILS = "collect_problem_details"
 CONFIRM_DRIVER_PRESENT = "confirm_driver_present"
 COLLECT_DRIVER_NUMBER = "collect_driver_number"
 ASK_DRIVER_PROBLEM_DETAILS = "ask_driver_problem_details"
+ASK_DRIVER_STOP_REASON = "ask_driver_stop_reason"
+ASK_DRIVER_LOCATION = "ask_driver_location"
+ASK_NEED_MECHANIC = "ask_need_mechanic"
+ASK_EXPECTED_RESTART_TIME = "ask_expected_restart_time"
 CONFIRM_TROUBLESHOOT = "confirm_troubleshoot"
 ALERT_ACTION = "alert_action"
 COLLECT_CONTACT_PHONE = "collect_contact_phone"
@@ -27,6 +35,10 @@ VALID_STATES = {
     CONFIRM_DRIVER_PRESENT,
     COLLECT_DRIVER_NUMBER,
     ASK_DRIVER_PROBLEM_DETAILS,
+    ASK_DRIVER_STOP_REASON,
+    ASK_DRIVER_LOCATION,
+    ASK_NEED_MECHANIC,
+    ASK_EXPECTED_RESTART_TIME,
     CONFIRM_TROUBLESHOOT,
     ALERT_ACTION,
     COLLECT_CONTACT_PHONE,
@@ -48,6 +60,10 @@ VALID_TRANSITIONS = {
     CONFIRM_DRIVER_PRESENT: {COLLECT_DRIVER_NUMBER, ASK_HELP_TYPE, FLEET_ALERT_CREATED},
     COLLECT_DRIVER_NUMBER: {ASK_DRIVER_PROBLEM_DETAILS},
     ASK_DRIVER_PROBLEM_DETAILS: {CONFIRM_TROUBLESHOOT},
+    ASK_DRIVER_STOP_REASON: {ASK_DRIVER_LOCATION},
+    ASK_DRIVER_LOCATION: {ASK_NEED_MECHANIC},
+    ASK_NEED_MECHANIC: {ASK_EXPECTED_RESTART_TIME},
+    ASK_EXPECTED_RESTART_TIME: {DRIVER_INVESTIGATION},
     CONFIRM_TROUBLESHOOT: {ASK_HELP_TYPE, CLOSED, FLEET_ALERT_CREATED},
     ALERT_ACTION: {COLLECT_CONTACT_PHONE, ALERT_ACTION, WAITING_NEW_CONTACT, CONTACT_DRIVER, FLEET_ALERT_CREATED},
     COLLECT_CONTACT_PHONE: {ALERT_ACTION, WAITING_MANAGER_REPLY, CONTACT_DRIVER, FLEET_ALERT_CREATED},
@@ -56,7 +72,7 @@ VALID_TRANSITIONS = {
     WAITING_NEW_CONTACT: {CONTACT_DRIVER, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     WAITING_NEW_CONTACT_NAME: {WAITING_NEW_CONTACT_PHONE, FLEET_ALERT_CREATED},
     WAITING_NEW_CONTACT_PHONE: {CONTACT_DRIVER, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
-    CONTACT_DRIVER: {DRIVER_INVESTIGATION, SUMMARY_SENT, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
+    CONTACT_DRIVER: {ASK_DRIVER_STOP_REASON, DRIVER_INVESTIGATION, SUMMARY_SENT, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     DRIVER_INVESTIGATION: {SUMMARY_SENT, CLOSED, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     SUMMARY_SENT: {CLOSED, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     CLOSED: {CLOSED},
@@ -110,6 +126,7 @@ def create_state(phone_number: str, current_step: str, context: dict = None):
     db = SessionLocal()
 
     try:
+        logger.info("Creating conversation state for %s -> %s", phone_number, current_step)
         state = ConversationState(
             phone_number=phone_number,
             current_step=current_step,
@@ -144,10 +161,17 @@ def update_state(phone_number: str, current_step: str = None, context: dict = No
             validate_transition(state.current_step, current_step)
 
         if current_step is not None:
+            logger.info(
+                "Updating conversation state for %s from %s to %s",
+                phone_number,
+                state.current_step,
+                current_step,
+            )
             validate_state_name(current_step)
             state.current_step = current_step
 
         if context is not None:
+            logger.debug("Updating conversation context for %s", phone_number)
             state.context_json = context
 
         db.commit()
@@ -167,6 +191,7 @@ def set_state(phone_number: str, current_step: str, context: dict = None):
     db = SessionLocal()
 
     try:
+        logger.info("Setting conversation state for %s -> %s", phone_number, current_step)
         state = (
             db.query(ConversationState)
             .filter(ConversationState.phone_number == phone_number)
@@ -193,12 +218,19 @@ def set_state(phone_number: str, current_step: str, context: dict = None):
 def transition_state(phone_number: str, next_step: str, context: dict = None):
     state = get_state(phone_number)
     if state is None:
+        logger.info("Transitioning new conversation state for %s -> %s", phone_number, next_step)
         return create_state(
             phone_number=phone_number,
             current_step=next_step or ASK_HELP_TYPE,
             context=context or {}
         )
 
+    logger.info(
+        "Transitioning conversation state for %s from %s to %s",
+        phone_number,
+        state.current_step,
+        next_step,
+    )
     validate_transition(state.current_step, next_step)
     return update_state(phone_number, next_step, context or state.context_json)
 

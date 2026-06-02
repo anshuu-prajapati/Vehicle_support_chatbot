@@ -1,6 +1,7 @@
-from app.services.ai_response_service import generate_ai_answer
+import logging
 from datetime import datetime
 
+from app.services.ai_response_service import generate_ai_answer
 from app.services.conversation_state_service import (
     get_state,
     create_state,
@@ -14,6 +15,10 @@ from app.services.conversation_state_service import (
     WAITING_NEW_CONTACT_PHONE,
     CONTACT_DRIVER,
     DRIVER_INVESTIGATION,
+    ASK_DRIVER_STOP_REASON,
+    ASK_DRIVER_LOCATION,
+    ASK_NEED_MECHANIC,
+    ASK_EXPECTED_RESTART_TIME,
     SUMMARY_SENT,
     CLOSED,
 )
@@ -21,6 +26,8 @@ from app.services.ticket_service import create_ticket
 from app.services.user_service import get_or_create_user, normalize_phone_number
 from app.services.whatsapp_service import send_whatsapp_message
 from app.services.memory_service import build_history_for_prompt
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_text(text: str) -> str:
@@ -38,6 +45,45 @@ def _is_negative(text: str) -> bool:
 def _is_restart(text: str) -> bool:
     restart_triggers = ["hi", "hii", "hello", "hey", "namaste", "restart", "reset", "start"]
     return any(text == trigger or text.startswith(f"{trigger} ") for trigger in restart_triggers)
+
+SUPPORTED_DRIVER_STOP_REASONS = {
+    "1": "breakdown",
+    "2": "maintenance",
+    "3": "waiting load",
+    "4": "leave",
+    "5": "other",
+    "breakdown": "breakdown",
+    "maintenance": "maintenance",
+    "waiting load": "waiting load",
+    "waiting": "waiting load",
+    "wait": "waiting load",
+    "load": "waiting load",
+    "leave": "leave",
+    "other": "other",
+}
+
+
+def _format_supported_reasons() -> str:
+    options = ["Breakdown", "Maintenance", "Waiting Load", "Leave", "Other"]
+    return " / ".join(options)
+
+
+def _normalize_reason(text: str) -> str:
+    normalized = _normalize_text(text)
+    return SUPPORTED_DRIVER_STOP_REASONS.get(normalized)
+
+
+def _build_driver_investigation_prompt() -> str:
+    return (
+        "Vehicle kyun ruk gaya?\n"
+        "Options:\n"
+        "1. Breakdown\n"
+        "2. Maintenance\n"
+        "3. Waiting Load\n"
+        "4. Leave\n"
+        "5. Other\n"
+        "Kripya upar se ek option bhejein."
+    )
 
 
 def _welcome_message(user_name: str) -> str:
@@ -260,13 +306,89 @@ def _handle_waiting_new_contact_state(user, state, text_body: str) -> str:
     )
 
 
+def _handle_ask_driver_stop_reason_state(user, state, text_body: str) -> str:
+    context = state.context_json or {}
+    reason = _normalize_reason(text_body)
+    if not reason:
+        logger.warning("Invalid driver stop reason from %s: %s", user.phone_number, text_body)
+        return (
+            "Kripya valid reason bhejein. Options: Breakdown, Maintenance, Waiting Load, Leave, Other."
+        )
+
+    investigation = {**context.get("driver_investigation", {}), "stop_reason": reason}
+    updated_context = {**context, "driver_investigation": investigation}
+    update_state(user.phone_number, ASK_DRIVER_LOCATION, updated_context)
+
+    return "Aapka current location kya hai?"
+
+
+def _handle_ask_driver_location_state(user, state, text_body: str) -> str:
+    location = text_body.strip()
+    if not location or len(location) < 3:
+        logger.warning("Invalid driver location from %s: %s", user.phone_number, text_body)
+        return "Kripya valid current location bhejein."
+
+    context = state.context_json or {}
+    investigation = {**context.get("driver_investigation", {}), "current_location": location}
+    updated_context = {**context, "driver_investigation": investigation}
+    update_state(user.phone_number, ASK_NEED_MECHANIC, updated_context)
+
+    return "Kya aapko mechanic ki zarurat hai? Haan / Nahi"
+
+
+def _handle_ask_need_mechanic_state(user, state, text_body: str) -> str:
+    normalized = _normalize_text(text_body)
+    if _is_affirmative(normalized):
+        mechanic_needed = True
+    elif _is_negative(normalized):
+        mechanic_needed = False
+    else:
+        logger.warning("Invalid mechanic answer from %s: %s", user.phone_number, text_body)
+        return "Kripya Haan ya Nahi mein jawab dein. Kya aapko mechanic ki zarurat hai?"
+
+    context = state.context_json or {}
+    investigation = {**context.get("driver_investigation", {}), "needs_mechanic": mechanic_needed}
+    updated_context = {**context, "driver_investigation": investigation}
+    update_state(user.phone_number, ASK_EXPECTED_RESTART_TIME, updated_context)
+
+    return "Expected restart time kya hai? (Jaise 30 mins, 2 ghante)"
+
+
+def _handle_ask_expected_restart_time_state(user, state, text_body: str) -> str:
+    restart_time = text_body.strip()
+    if not restart_time or len(restart_time) < 2:
+        logger.warning("Invalid restart time from %s: %s", user.phone_number, text_body)
+        return "Kripya expected restart time clearly batayein."
+
+    context = state.context_json or {}
+    investigation = {
+        **context.get("driver_investigation", {}),
+        "expected_restart_time": restart_time,
+        "updated_at": datetime.utcnow().isoformat() + "Z"
+    }
+    updated_context = {**context, "driver_investigation": investigation}
+    update_state(user.phone_number, DRIVER_INVESTIGATION, updated_context)
+
+    summary = (
+        f"Driver investigation details saved.\n"
+        f"Reason: {investigation['stop_reason'].title()}\n"
+        f"Location: {investigation['current_location']}\n"
+        f"Need mechanic: {'Haan' if investigation['needs_mechanic'] else 'Nahi'}\n"
+        f"Expected restart: {investigation['expected_restart_time']}\n\n"
+        "Agar yeh conversation interrupt bhi hui ho, toh aap dobara message bhej kar continue kar sakte hain.\n"
+        "Agar issue close ho gaya ho toh 'closed' bhejiye."
+    )
+    logger.info("Driver investigation stored for %s: %s", user.phone_number, investigation)
+    return summary
+
+
 def _handle_contact_driver_state(user, state, text_body: str) -> str:
     normalized = _normalize_text(text_body)
     context = state.context_json or {}
 
     if normalized in ["investigate", "investigation", "driver investigating", "driver investigate"]:
-        update_state(user.phone_number, DRIVER_INVESTIGATION, context)
-        return "Driver se investigation shuru karwai gayi hai. Kripya jaise hi update mile bataiye."
+        update_state(user.phone_number, ASK_DRIVER_STOP_REASON, context)
+        return _build_driver_investigation_prompt()
 
     if normalized in ["summary", "update", "report", "status"]:
         update_state(user.phone_number, SUMMARY_SENT, context)
@@ -359,6 +481,18 @@ def handle_support_message(user, text_body: str) -> str:
 
     if state.current_step == WAITING_NEW_CONTACT:
         return _handle_waiting_new_contact_state(user, state, text_body)
+
+    if state.current_step == ASK_DRIVER_STOP_REASON:
+        return _handle_ask_driver_stop_reason_state(user, state, text_body)
+
+    if state.current_step == ASK_DRIVER_LOCATION:
+        return _handle_ask_driver_location_state(user, state, text_body)
+
+    if state.current_step == ASK_NEED_MECHANIC:
+        return _handle_ask_need_mechanic_state(user, state, text_body)
+
+    if state.current_step == ASK_EXPECTED_RESTART_TIME:
+        return _handle_ask_expected_restart_time_state(user, state, text_body)
 
     if state.current_step == CONTACT_DRIVER:
         return _handle_contact_driver_state(user, state, text_body)

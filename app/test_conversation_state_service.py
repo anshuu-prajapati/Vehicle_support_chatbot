@@ -5,6 +5,12 @@ from app.services.conversation_state_service import (
     validate_state_name,
     validate_transition,
     ASK_HELP_TYPE,
+    ASK_DRIVER_STOP_REASON,
+    ASK_DRIVER_LOCATION,
+    ASK_NEED_MECHANIC,
+    ASK_EXPECTED_RESTART_TIME,
+    CONTACT_DRIVER,
+    DRIVER_INVESTIGATION,
     FLEET_ALERT_CREATED,
     WAITING_MANAGER_REPLY,
     WAITING_NEW_CONTACT_NAME,
@@ -16,6 +22,10 @@ from app.services.conversation_state_service import (
 class ConversationStateServiceTests(unittest.TestCase):
     def test_valid_state_names(self):
         self.assertTrue(is_valid_state(ASK_HELP_TYPE))
+        self.assertTrue(is_valid_state(ASK_DRIVER_STOP_REASON))
+        self.assertTrue(is_valid_state(ASK_DRIVER_LOCATION))
+        self.assertTrue(is_valid_state(ASK_NEED_MECHANIC))
+        self.assertTrue(is_valid_state(ASK_EXPECTED_RESTART_TIME))
         self.assertTrue(is_valid_state(FLEET_ALERT_CREATED))
         self.assertTrue(is_valid_state(WAITING_MANAGER_REPLY))
         self.assertTrue(is_valid_state(WAITING_NEW_CONTACT_NAME))
@@ -33,6 +43,11 @@ class ConversationStateServiceTests(unittest.TestCase):
         validate_transition(WAITING_NEW_CONTACT_PHONE, WAITING_MANAGER_REPLY)
         validate_transition(WAITING_MANAGER_REPLY, CLOSED)
         validate_transition(CLOSED, CLOSED)
+        validate_transition(CONTACT_DRIVER, ASK_DRIVER_STOP_REASON)
+        validate_transition(ASK_DRIVER_STOP_REASON, ASK_DRIVER_LOCATION)
+        validate_transition(ASK_DRIVER_LOCATION, ASK_NEED_MECHANIC)
+        validate_transition(ASK_NEED_MECHANIC, ASK_EXPECTED_RESTART_TIME)
+        validate_transition(ASK_EXPECTED_RESTART_TIME, DRIVER_INVESTIGATION)
 
     def test_invalid_transition_raises(self):
         with self.assertRaises(ValueError):
