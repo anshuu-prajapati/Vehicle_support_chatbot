@@ -1,12 +1,17 @@
 from app.services.ai_response_service import generate_ai_answer
+from datetime import datetime
+
 from app.services.conversation_state_service import (
     get_state,
     create_state,
     update_state,
+    set_state,
     reset_state,
     FLEET_ALERT_CREATED,
     WAITING_MANAGER_REPLY,
     WAITING_NEW_CONTACT,
+    WAITING_NEW_CONTACT_NAME,
+    WAITING_NEW_CONTACT_PHONE,
     CONTACT_DRIVER,
     DRIVER_INVESTIGATION,
     SUMMARY_SENT,
@@ -50,14 +55,49 @@ def _is_alert_option(text: str, option: str) -> bool:
 
 
 def _build_contact_message(context: dict) -> str:
-    return (
+    message = (
         f"Aapko designated contact ke roop mein notify kiya gaya hai.\n"
         f"Vehicle: {context.get('vehicle_number')}\n"
         f"Driver: {context.get('driver_name')}\n"
         f"Location: {context.get('current_location')}\n"
         f"Last GPS Time: {context.get('last_gps_time')}\n"
-        "Kripya jaldi se respond karein."
     )
+
+    transfer_name = context.get("transfer_contact_name") or context.get("contact_name")
+    if transfer_name:
+        message += f"Contact Name: {transfer_name}\n"
+
+    message += "Kripya jaldi se respond karein."
+    return message
+
+
+def _build_transfer_alert_message(context: dict) -> str:
+    return (
+        f"Aapko naye contact ke roop mein notify kiya gaya hai.\n"
+        f"Vehicle: {context.get('vehicle_number')}\n"
+        f"Driver: {context.get('driver_name')}\n"
+        f"Location: {context.get('current_location')}\n"
+        f"Last GPS Time: {context.get('last_gps_time')}\n"
+        "Kripya jaldi se respond karein.\n\n"
+        "Options:\n"
+        "1. I am responsible\n"
+        "2. Contact another person\n"
+        "3. Contact drivers directly\n\n"
+        "Please reply with 1, 2, or 3."
+    )
+
+
+def _append_transfer_history(context: dict, contact_name: str, contact_phone: str, transferred_by: str) -> list:
+    history = list(context.get("transfer_history", [])) if context else []
+    history.append({
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "transferred_by": transferred_by,
+        "contact_name": contact_name,
+        "contact_phone": contact_phone,
+        "vehicle_id": context.get("vehicle_id") if context else None,
+        "alert_id": context.get("alert_id") if context else None,
+    })
+    return history
 
 
 def _handle_alert_action_state(user, state, normalized, text_body: str) -> str:
@@ -126,8 +166,8 @@ def _handle_fleet_alert_created_state(user, state, normalized, text_body: str) -
         )
 
     if normalized in ["2", "2.", "contact another person", "contact another person."]:
-        update_state(user.phone_number, WAITING_NEW_CONTACT, context)
-        return "Kripya naye contact ka WhatsApp phone number bhejiye."
+        update_state(user.phone_number, WAITING_NEW_CONTACT_NAME, context)
+        return "Kripya naye contact ka naam bhejiye."
 
     if normalized in ["3", "3.", "contact drivers directly", "contact drivers directly."]:
         driver_phone = context.get("driver_phone")
@@ -148,6 +188,56 @@ def _handle_fleet_alert_created_state(user, state, normalized, text_body: str) -
         "1. I am responsible\n"
         "2. Contact another person\n"
         "3. Contact drivers directly"
+    )
+
+
+def _handle_waiting_new_contact_name_state(user, state, text_body: str) -> str:
+    contact_name = text_body.strip()
+    if not contact_name:
+        return "Kripya valid naam bhejiye."
+
+    context = state.context_json or {}
+    updated_context = {**context, "transfer_contact_name": contact_name}
+    update_state(user.phone_number, WAITING_NEW_CONTACT_PHONE, updated_context)
+    return "Kripya naye contact ka WhatsApp phone number bhejiye."
+
+
+def _handle_waiting_new_contact_phone_state(user, state, text_body: str) -> str:
+    context = state.context_json or {}
+    contact_phone = normalize_phone_number(text_body)
+    if not contact_phone or len(contact_phone) < 8:
+        return "Kripya valid phone number bhejein, country code ke saath."
+
+    contact_name = context.get("transfer_contact_name") or context.get("contact_name") or "Contact"
+    transfer_history = _append_transfer_history(context, contact_name, contact_phone, user.phone_number)
+    updated_context = {
+        **context,
+        "contact_phone": contact_phone,
+        "contact_name": contact_name,
+        "transfer_contact_name": contact_name,
+        "transfer_contact_phone": contact_phone,
+        "transfer_history": transfer_history,
+    }
+
+    get_or_create_user(contact_phone, contact_name, role="manager")
+    is_driver = contact_phone == context.get("driver_phone")
+
+    if is_driver:
+        contact_message = _build_contact_message(updated_context)
+        send_whatsapp_message(contact_phone, contact_message)
+        update_state(user.phone_number, CONTACT_DRIVER, updated_context)
+        set_state(contact_phone, CONTACT_DRIVER, updated_context)
+        return "Driver ko alert bhej diya gaya hai. Ab driver se investigation karwayein."
+
+    contact_message = _build_transfer_alert_message(updated_context)
+    send_whatsapp_message(contact_phone, contact_message)
+    update_state(user.phone_number, WAITING_MANAGER_REPLY, updated_context)
+    set_state(contact_phone, FLEET_ALERT_CREATED, updated_context)
+
+    return (
+        "Contact person ko alert bhej diya gaya hai.\n"
+        "Vehicle conversation ab naye contact ko transfer kar di gayi hai.\n"
+        "Aapko ab unke jawab ke liye update milega."
     )
 
 
@@ -260,6 +350,12 @@ def handle_support_message(user, text_body: str) -> str:
 
     if state.current_step == FLEET_ALERT_CREATED:
         return _handle_fleet_alert_created_state(user, state, normalized, text_body)
+
+    if state.current_step == WAITING_NEW_CONTACT_NAME:
+        return _handle_waiting_new_contact_name_state(user, state, text_body)
+
+    if state.current_step == WAITING_NEW_CONTACT_PHONE:
+        return _handle_waiting_new_contact_phone_state(user, state, text_body)
 
     if state.current_step == WAITING_NEW_CONTACT:
         return _handle_waiting_new_contact_state(user, state, text_body)

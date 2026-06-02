@@ -7,6 +7,8 @@ from app.services.conversation_state_service import (
     ASK_HELP_TYPE,
     FLEET_ALERT_CREATED,
     WAITING_MANAGER_REPLY,
+    WAITING_NEW_CONTACT_NAME,
+    WAITING_NEW_CONTACT_PHONE,
     CLOSED,
 )
 
@@ -16,6 +18,8 @@ class ConversationStateServiceTests(unittest.TestCase):
         self.assertTrue(is_valid_state(ASK_HELP_TYPE))
         self.assertTrue(is_valid_state(FLEET_ALERT_CREATED))
         self.assertTrue(is_valid_state(WAITING_MANAGER_REPLY))
+        self.assertTrue(is_valid_state(WAITING_NEW_CONTACT_NAME))
+        self.assertTrue(is_valid_state(WAITING_NEW_CONTACT_PHONE))
         self.assertTrue(is_valid_state(CLOSED))
 
     def test_invalid_state_name_raises(self):
@@ -24,7 +28,9 @@ class ConversationStateServiceTests(unittest.TestCase):
 
     def test_valid_transition_rules(self):
         validate_transition(ASK_HELP_TYPE, FLEET_ALERT_CREATED)
-        validate_transition(FLEET_ALERT_CREATED, WAITING_MANAGER_REPLY)
+        validate_transition(FLEET_ALERT_CREATED, WAITING_NEW_CONTACT_NAME)
+        validate_transition(WAITING_NEW_CONTACT_NAME, WAITING_NEW_CONTACT_PHONE)
+        validate_transition(WAITING_NEW_CONTACT_PHONE, WAITING_MANAGER_REPLY)
         validate_transition(WAITING_MANAGER_REPLY, CLOSED)
         validate_transition(CLOSED, CLOSED)
 

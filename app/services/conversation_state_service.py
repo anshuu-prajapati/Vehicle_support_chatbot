@@ -14,6 +14,8 @@ COLLECT_CONTACT_PHONE = "collect_contact_phone"
 FLEET_ALERT_CREATED = "FLEET_ALERT_CREATED"
 WAITING_MANAGER_REPLY = "WAITING_MANAGER_REPLY"
 WAITING_NEW_CONTACT = "WAITING_NEW_CONTACT"
+WAITING_NEW_CONTACT_NAME = "WAITING_NEW_CONTACT_NAME"
+WAITING_NEW_CONTACT_PHONE = "WAITING_NEW_CONTACT_PHONE"
 CONTACT_DRIVER = "CONTACT_DRIVER"
 DRIVER_INVESTIGATION = "DRIVER_INVESTIGATION"
 SUMMARY_SENT = "SUMMARY_SENT"
@@ -31,6 +33,8 @@ VALID_STATES = {
     FLEET_ALERT_CREATED,
     WAITING_MANAGER_REPLY,
     WAITING_NEW_CONTACT,
+    WAITING_NEW_CONTACT_NAME,
+    WAITING_NEW_CONTACT_PHONE,
     CONTACT_DRIVER,
     DRIVER_INVESTIGATION,
     SUMMARY_SENT,
@@ -47,9 +51,11 @@ VALID_TRANSITIONS = {
     CONFIRM_TROUBLESHOOT: {ASK_HELP_TYPE, CLOSED, FLEET_ALERT_CREATED},
     ALERT_ACTION: {COLLECT_CONTACT_PHONE, ALERT_ACTION, WAITING_NEW_CONTACT, CONTACT_DRIVER, FLEET_ALERT_CREATED},
     COLLECT_CONTACT_PHONE: {ALERT_ACTION, WAITING_MANAGER_REPLY, CONTACT_DRIVER, FLEET_ALERT_CREATED},
-    FLEET_ALERT_CREATED: {WAITING_MANAGER_REPLY, WAITING_NEW_CONTACT, CONTACT_DRIVER, FLEET_ALERT_CREATED},
-    WAITING_MANAGER_REPLY: {SUMMARY_SENT, CLOSED, WAITING_MANAGER_REPLY, CONTACT_DRIVER, WAITING_NEW_CONTACT, FLEET_ALERT_CREATED},
+    FLEET_ALERT_CREATED: {WAITING_MANAGER_REPLY, WAITING_NEW_CONTACT, WAITING_NEW_CONTACT_NAME, CONTACT_DRIVER, FLEET_ALERT_CREATED},
+    WAITING_MANAGER_REPLY: {SUMMARY_SENT, CLOSED, WAITING_MANAGER_REPLY, CONTACT_DRIVER, WAITING_NEW_CONTACT, WAITING_NEW_CONTACT_NAME, FLEET_ALERT_CREATED},
     WAITING_NEW_CONTACT: {CONTACT_DRIVER, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
+    WAITING_NEW_CONTACT_NAME: {WAITING_NEW_CONTACT_PHONE, FLEET_ALERT_CREATED},
+    WAITING_NEW_CONTACT_PHONE: {CONTACT_DRIVER, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     CONTACT_DRIVER: {DRIVER_INVESTIGATION, SUMMARY_SENT, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     DRIVER_INVESTIGATION: {SUMMARY_SENT, CLOSED, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
     SUMMARY_SENT: {CLOSED, WAITING_MANAGER_REPLY, FLEET_ALERT_CREATED},
@@ -144,6 +150,39 @@ def update_state(phone_number: str, current_step: str = None, context: dict = No
         if context is not None:
             state.context_json = context
 
+        db.commit()
+        db.refresh(state)
+        return state
+    finally:
+        db.close()
+
+
+def set_state(phone_number: str, current_step: str, context: dict = None):
+    """Set conversation state without validating transition rules.
+
+    This is useful for transferring a conversation to a new phone number
+    while preserving the alert context and history.
+    """
+    validate_state_name(current_step)
+    db = SessionLocal()
+
+    try:
+        state = (
+            db.query(ConversationState)
+            .filter(ConversationState.phone_number == phone_number)
+            .first()
+        )
+
+        if not state:
+            return create_state(
+                phone_number=phone_number,
+                current_step=current_step,
+                context=context or {}
+            )
+
+        state.current_step = current_step
+        if context is not None:
+            state.context_json = context
         db.commit()
         db.refresh(state)
         return state
