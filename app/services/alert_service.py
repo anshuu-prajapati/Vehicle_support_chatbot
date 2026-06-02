@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal
 from app.db.models import Alert, VehicleStatus
+from app.services.conversation_state_service import update_state
+from app.services.whatsapp_service import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,8 @@ def create_alert(vehicle_id: int, alert_type: str = ALERT_TYPE_VEHICLE_NOT_WORKI
         db.commit()
         db.refresh(alert)
 
+        send_alert_to_manager(alert, db=db)
+
         logger.info(
             "Created alert vehicle_id=%s alert_type=%s status=%s",
             vehicle_id,
@@ -129,3 +133,77 @@ def detect_alerts(db: Session = None) -> List[Alert]:
     finally:
         if own_session:
             db.close()
+
+
+def _format_last_gps_time(last_gps_time):
+    if not last_gps_time:
+        return "Unknown"
+    try:
+        return last_gps_time.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(last_gps_time)
+
+
+def _build_alert_message(vehicle, status, driver_name, last_gps_time):
+    return (
+        f"Fleet Alert: Vehicle {vehicle.vehicle_number}\n"
+        f"Driver: {driver_name}\n"
+        f"Current Location: {status.location or 'Unknown'}\n"
+        f"Last GPS Time: {last_gps_time}\n\n"
+        "Options:\n"
+        "1. I am responsible\n"
+        "2. Contact another person\n"
+        "3. Contact drivers directly\n\n"
+        "Please reply with 1, 2, or 3."
+    )
+
+
+def _build_alert_context(alert):
+    vehicle = alert.vehicle
+    status = vehicle.status if vehicle else None
+    driver_name = None
+    driver_phone = None
+    if vehicle and vehicle.driver:
+        driver_name = vehicle.driver.name or vehicle.driver.phone_number
+        driver_phone = vehicle.driver.phone_number
+
+    return {
+        "alert_id": alert.id,
+        "vehicle_id": vehicle.id if vehicle else None,
+        "vehicle_number": vehicle.vehicle_number if vehicle else None,
+        "driver_name": driver_name or "Unknown",
+        "current_location": status.location if status else "Unknown",
+        "last_gps_time": _format_last_gps_time(status.last_gps_time) if status else "Unknown",
+        "driver_phone": driver_phone,
+        "manager_phone": vehicle.manager.phone_number if vehicle and vehicle.manager else None,
+    }
+
+
+def send_alert_to_manager(alert: Alert, db: Session = None) -> bool:
+    if alert is None or alert.vehicle is None:
+        return False
+
+    vehicle = alert.vehicle
+    manager = vehicle.manager
+    status = vehicle.status
+
+    if manager is None or not manager.phone_number:
+        logger.info(
+            "Skipping WhatsApp alert because no manager phone available for vehicle_id=%s",
+            vehicle.id,
+        )
+        return False
+
+    contact_phone = manager.phone_number
+    driver_name = vehicle.driver.name if vehicle.driver and vehicle.driver.name else (vehicle.driver.phone_number if vehicle.driver else "Unknown")
+    last_gps_time = _format_last_gps_time(status.last_gps_time) if status else "Unknown"
+    message = _build_alert_message(vehicle, status or type("S", (), {"location": None})(), driver_name, last_gps_time)
+
+    update_state(contact_phone, "alert_action", _build_alert_context(alert))
+    send_whatsapp_message(contact_phone, message)
+    logger.info(
+        "Sent WhatsApp fleet alert to manager %s for vehicle_id=%s",
+        contact_phone,
+        vehicle.id,
+    )
+    return True
