@@ -52,13 +52,13 @@ def _build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _vehicle_monitor_job,
-        trigger=IntervalTrigger(minutes=15),
+        trigger=IntervalTrigger(minutes=1),
         id=JOB_ID,
         name="Fleet vehicle monitor",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=300,
+        misfire_grace_time=60,
     )
     scheduler.add_listener(_job_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     return scheduler

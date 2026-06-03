@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 
@@ -14,9 +15,14 @@ from scheduler.vehicle_monitor import start_scheduler, stop_scheduler
 
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+
+# Reduce noise from third-party libraries
+logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.INFO)
 
 app = FastAPI()
 
@@ -45,4 +51,17 @@ def on_shutdown() -> None:
 def home():
     return {
         "message": "AI Support System Running"
+    }
+
+
+@app.get("/debug/config")
+def debug_config():
+    """Check WhatsApp and system configuration"""
+    return {
+        "whatsapp_configured": bool(os.getenv("META_ACCESS_TOKEN")) and bool(os.getenv("META_PHONE_NUMBER_ID")),
+        "verify_token_configured": bool(os.getenv("META_VERIFY_TOKEN")),
+        "database_url": "***" if os.getenv("DATABASE_URL") else "NOT SET",
+        "webhook_url": "POST /webhook/",
+        "verify_url": "GET /webhook/",
+        "status": "ready"
     }

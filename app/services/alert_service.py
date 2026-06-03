@@ -9,6 +9,7 @@ from app.db.database import SessionLocal
 from app.db.models import Alert, VehicleStatus
 from app.services.conversation_state_service import (
     update_state,
+    set_state,
     FLEET_ALERT_CREATED,
 )
 from app.services.whatsapp_service import send_whatsapp_message
@@ -121,6 +122,10 @@ def detect_alerts(db: Session = None) -> List[Alert]:
             .all()
         )
 
+        logger.debug("detect_alerts: Found %d vehicles matching 'off' and 'not working' criteria", len(statuses))
+        for status in statuses:
+            logger.debug("  - Vehicle ID %d: ign_state='%s', mode='%s'", status.vehicle_id, status.ign_state, status.mode)
+
         created_alerts: List[Alert] = []
         for status in statuses:
             alert = create_alert(status.vehicle_id, ALERT_TYPE_VEHICLE_NOT_WORKING, db=db)
@@ -149,15 +154,17 @@ def _format_last_gps_time(last_gps_time):
 
 def _build_alert_message(vehicle, status, driver_name, last_gps_time):
     return (
-        f"Fleet Alert: Vehicle {vehicle.vehicle_number}\n"
-        f"Driver: {driver_name}\n"
-        f"Current Location: {status.location or 'Unknown'}\n"
-        f"Last GPS Time: {last_gps_time}\n\n"
-        "Options:\n"
-        "1. I am responsible\n"
-        "2. Contact another person\n"
-        "3. Contact drivers directly\n\n"
-        "Please reply with 1, 2, or 3."
+        f"🚨 **FLEET ALERT**\n\n"
+        f"Vehicle {vehicle.vehicle_number} NOT WORKING!\n\n"
+        f"📋 **Details:**\n"
+        f"• Driver: {driver_name}\n"
+        f"• Location: {status.location or 'Unknown'}\n"
+        f"• Last GPS Update: {last_gps_time}\n\n"
+        f"**Kya aap is alert ko handle karenge?**\n"
+        f"1. Haan, main handle karunga\n"
+        f"2. Kisi aur ko assign karo\n"
+        f"3. Driver ko directly contact karo\n\n"
+        f"Reply with: 1, 2, or 3"
     )
 
 
@@ -184,6 +191,7 @@ def _build_alert_context(alert):
 
 def send_alert_to_manager(alert: Alert, db: Session = None) -> bool:
     if alert is None or alert.vehicle is None:
+        logger.error("send_alert_to_manager: alert or vehicle is None")
         return False
 
     vehicle = alert.vehicle
@@ -191,22 +199,44 @@ def send_alert_to_manager(alert: Alert, db: Session = None) -> bool:
     status = vehicle.status
 
     if manager is None or not manager.phone_number:
-        logger.info(
+        logger.warning(
             "Skipping WhatsApp alert because no manager phone available for vehicle_id=%s",
             vehicle.id,
         )
         return False
 
-    contact_phone = manager.phone_number
-    driver_name = vehicle.driver.name if vehicle.driver and vehicle.driver.name else (vehicle.driver.phone_number if vehicle.driver else "Unknown")
-    last_gps_time = _format_last_gps_time(status.last_gps_time) if status else "Unknown"
-    message = _build_alert_message(vehicle, status or type("S", (), {"location": None})(), driver_name, last_gps_time)
+    try:
+        contact_phone = manager.phone_number
+        driver_name = vehicle.driver.name if vehicle.driver and vehicle.driver.name else (vehicle.driver.phone_number if vehicle.driver else "Unknown")
+        last_gps_time = _format_last_gps_time(status.last_gps_time) if status else "Unknown"
+        message = _build_alert_message(vehicle, status or type("S", (), {"location": None})(), driver_name, last_gps_time)
 
-    update_state(contact_phone, FLEET_ALERT_CREATED, _build_alert_context(alert))
-    send_whatsapp_message(contact_phone, message)
-    logger.info(
-        "Sent WhatsApp fleet alert to manager %s for vehicle_id=%s",
-        contact_phone,
-        vehicle.id,
-    )
-    return True
+        # Use set_state to force-set the alert state, bypassing validation
+        # This is necessary because alerts can interrupt any ongoing conversation
+        logger.debug("Setting conversation state for manager %s to FLEET_ALERT_CREATED", contact_phone)
+        set_state(contact_phone, FLEET_ALERT_CREATED, _build_alert_context(alert))
+        
+        logger.info("Sending WhatsApp message to manager %s for vehicle %s", contact_phone, vehicle.vehicle_number)
+        success = send_whatsapp_message(contact_phone, message)
+        
+        if success:
+            logger.info(
+                "✓ Successfully sent WhatsApp fleet alert to manager %s for vehicle_id=%s",
+                contact_phone,
+                vehicle.id,
+            )
+            return True
+        else:
+            logger.error(
+                "✗ Failed to send WhatsApp fleet alert to manager %s for vehicle_id=%s",
+                contact_phone,
+                vehicle.id,
+            )
+            return False
+    except Exception as e:
+        logger.exception(
+            "Exception while sending alert to manager for vehicle_id=%s: %s",
+            vehicle.id,
+            str(e)
+        )
+        return False
