@@ -20,6 +20,9 @@ def _merge_context(existing: Dict[str, Any], updates: Dict[str, Any]) -> Dict[st
 
 class ConversationStep(str, Enum):
     MAIN_MENU = "MAIN_MENU"
+    ASK_RIGHT_PERSON = "ASK_RIGHT_PERSON"
+    ASK_PROBLEM_DESCRIPTION = "ASK_PROBLEM_DESCRIPTION"
+    ASK_CONTACT_NUMBER = "ASK_CONTACT_NUMBER"
     VEHICLE_NUMBER = "VEHICLE_NUMBER"
     ASK_DRIVER_AVAILABILITY = "ASK_DRIVER_AVAILABILITY"
     ASK_LOCATION = "ASK_LOCATION"

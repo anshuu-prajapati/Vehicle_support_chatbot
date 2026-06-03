@@ -6,7 +6,10 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
+from sqlalchemy.orm import Session
 
+from app.db.dependencies import get_db
+from app.services.vehicle_alert_service import VehicleAlertService
 from app.clients.vehicle_api_client import (
     VehicleAPIClient,
     VehicleAPIException,
@@ -22,6 +25,7 @@ from app.schemas.vehicle_schema import (
     VehicleSearchResponse,
     NotWorkingVehiclesResponse,
     VehicleAPIHealthResponse,
+    VehicleAlertResponse,
 )
 
 router = APIRouter(prefix="/vehicles", tags=["Vehicles"])
@@ -36,6 +40,88 @@ async def get_vehicle_service() -> VehicleAPIService:
         yield service
     finally:
         await service.close()
+
+
+@router.post("/send-breakdown-alerts", response_model=VehicleAlertResponse)
+async def send_breakdown_alerts(db: Session = Depends(get_db)):
+    """
+    Send WhatsApp alerts to managers about broken/not working vehicles
+    
+    This endpoint:
+    1. Queries database for vehicles with 'not working' status
+    2. Gets their locations and contact information  
+    3. Sends WhatsApp alerts to managers/owners
+    4. Returns summary of alerts sent
+    
+    Returns:
+        VehicleAlertResponse with alert sending results and vehicle details
+    """
+    try:
+        logger.info("Processing vehicle breakdown alert request")
+        
+        # Initialize alert service
+        alert_service = VehicleAlertService(db)
+        
+        # Get broken vehicles data
+        broken_vehicles = alert_service.get_broken_vehicles_with_contacts()
+        
+        if not broken_vehicles:
+            return VehicleAlertResponse(
+                success=True,
+                message="No broken vehicles found at this time",
+                vehicles_count=0,
+                alerts_sent=0,
+                vehicles_data=[]
+            )
+        
+        # Send alerts to managers
+        result = alert_service.send_alert_to_managers(broken_vehicles)
+        
+        logger.info(
+            f"Vehicle alert process completed: {result['alerts_sent']} alerts sent for {result['vehicles_count']} vehicles"
+        )
+        
+        return VehicleAlertResponse(**result)
+        
+    except Exception as e:
+        logger.exception("Error processing vehicle breakdown alerts", exc_info=e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process vehicle alerts: {str(e)}"
+        )
+
+
+@router.get("/breakdown-status", response_model=VehicleAlertResponse) 
+async def get_breakdown_status(db: Session = Depends(get_db)):
+    """
+    Get current status of broken/not working vehicles without sending alerts
+    
+    Returns:
+        VehicleAlertResponse with current broken vehicles information
+    """
+    try:
+        logger.info("Getting breakdown status")
+        
+        # Initialize alert service
+        alert_service = VehicleAlertService(db)
+        
+        # Get broken vehicles data
+        broken_vehicles = alert_service.get_broken_vehicles_with_contacts()
+        
+        return VehicleAlertResponse(
+            success=True,
+            message=f"Found {len(broken_vehicles)} broken vehicle(s)",
+            vehicles_count=len(broken_vehicles),
+            alerts_sent=0,
+            vehicles_data=broken_vehicles
+        )
+        
+    except Exception as e:
+        logger.exception("Error getting breakdown status", exc_info=e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get breakdown status: {str(e)}"
+        )
 
 
 @router.get("/health", response_model=VehicleAPIHealthResponse)

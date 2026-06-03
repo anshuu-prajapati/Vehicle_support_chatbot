@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field, validator
 
@@ -41,6 +41,45 @@ class VehicleDetails(BaseModel):
     def normalize_vehicle_number(cls, v: str) -> str:
         """Normalize vehicle number to uppercase without spaces"""
         return v.strip().upper().replace(" ", "")
+
+    class Config:
+        orm_mode = True
+
+
+class VehicleContact(BaseModel):
+    """Vehicle contact information"""
+    type: str = Field(..., description="Contact type (OWNER, DRIVER)")
+    owner_phone: Optional[str] = Field(None, description="Owner phone number")
+    driver_phone: Optional[str] = Field(None, description="Driver phone number") 
+    is_primary: bool = Field(False, description="Is primary contact")
+
+    class Config:
+        orm_mode = True
+
+
+class BrokenVehicleInfo(BaseModel):
+    """Information about a broken vehicle"""
+    vehicle_id: int = Field(..., description="Vehicle database ID")
+    vehicle_number: str = Field(..., description="Vehicle registration number")
+    location: str = Field(..., description="Current vehicle location")
+    last_gps_time: Optional[str] = Field(None, description="Last GPS update time")
+    alert_created: Optional[str] = Field(None, description="Alert creation time")
+    manager_name: str = Field(..., description="Manager name")
+    manager_phone: Optional[str] = Field(None, description="Manager phone number")
+    contacts: List[VehicleContact] = Field(default_factory=list, description="Vehicle contacts")
+
+    class Config:
+        orm_mode = True
+
+
+class VehicleAlertResponse(BaseModel):
+    """Response for vehicle alert operations"""
+    success: bool = Field(..., description="Whether operation was successful")
+    message: str = Field(..., description="Operation result message")
+    vehicles_count: int = Field(0, description="Number of broken vehicles found")
+    alerts_sent: int = Field(0, description="Number of WhatsApp alerts sent")
+    failed_sends: List[Dict[str, Any]] = Field(default_factory=list, description="Failed message sends")
+    vehicles_data: List[BrokenVehicleInfo] = Field(default_factory=list, description="Broken vehicles data")
 
     class Config:
         orm_mode = True

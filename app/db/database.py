@@ -3,12 +3,64 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import os
+from urllib.parse import urlparse
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL)
+def create_database_if_not_exists():
+    """Create the database if it doesn't exist"""
+    if not DATABASE_URL or DATABASE_URL.startswith("sqlite"):
+        return
+    
+    try:
+        # Parse the database URL
+        parsed = urlparse(DATABASE_URL)
+        db_name = parsed.path[1:]  # Remove leading slash
+        
+        # Create connection to postgres database (default database)
+        conn_params = {
+            'host': parsed.hostname,
+            'port': parsed.port or 5432,
+            'user': parsed.username,
+            'password': parsed.password,
+            'database': 'postgres'  # Connect to default postgres database
+        }
+        
+        # Connect to PostgreSQL server
+        conn = psycopg2.connect(**conn_params)
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cursor = conn.cursor()
+        
+        # Check if database exists
+        cursor.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,))
+        exists = cursor.fetchone()
+        
+        if not exists:
+            print(f"Creating database '{db_name}'...")
+            cursor.execute(f'CREATE DATABASE "{db_name}"')
+            print(f"Database '{db_name}' created successfully!")
+        else:
+            print(f"Database '{db_name}' already exists.")
+            
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        print(f"Error creating database: {e}")
+        print("Please create the database manually or check your connection settings.")
+
+# Create database if it doesn't exist
+create_database_if_not_exists()
+
+# Configure engine based on database type
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(
     autocommit=False,
@@ -21,6 +73,11 @@ Base = declarative_base()
 
 def run_schema_migrations():
     from sqlalchemy import inspect
+
+    # Skip migrations for SQLite as it doesn't support all PostgreSQL features
+    if DATABASE_URL.startswith("sqlite"):
+        print("SQLite detected - skipping PostgreSQL-specific migrations")
+        return
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()

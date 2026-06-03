@@ -1,6 +1,5 @@
 import uuid
-from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.sql import func
 from sqlalchemy.types import TypeDecorator, CHAR
 import os
@@ -11,13 +10,14 @@ from app.db.database import Base
 # Custom UUID type that works with both PostgreSQL and SQLite
 class GUID(TypeDecorator):
     """Platform-independent GUID type.
-    Uses PostgreSQL's UUID type, otherwise uses CHAR(32), storing as stringified hex values.
+    Uses PostgreSQL's UUID type, otherwise uses CHAR(36), storing as stringified hex values.
     """
     impl = CHAR
     cache_ok = True
 
     def load_dialect_impl(self, dialect):
         if dialect.name == 'postgresql':
+            from sqlalchemy.dialects.postgresql import UUID
             return dialect.type_descriptor(UUID())
         else:
             return dialect.type_descriptor(CHAR(36))
@@ -41,34 +41,19 @@ class GUID(TypeDecorator):
             return value
 
 
-class ConversationState(Base):
-    __tablename__ = "conversation_states"
-    __table_args__ = (
-        UniqueConstraint("phone_number", name="uq_conversation_states_phone_number"),
-        Index("ix_conversation_states_phone_number", "phone_number"),
-    )
+class VehicleContact(Base):
+    __tablename__ = "vehicle_contacts"
 
-    # Use database-agnostic UUID type
     id = Column(
         GUID(),
         primary_key=True,
         default=uuid.uuid4,
         nullable=False,
     )
-    phone_number = Column(String(20), nullable=False, index=True)
-    current_step = Column(String(100), nullable=False)
-    
-    # Use TEXT for SQLite compatibility instead of JSONB
-    context_json = Column(
-        Text if os.getenv("DATABASE_URL", "").startswith("sqlite") else JSONB,
-        nullable=False,
-        default="{}"
-    )
-    
+    vehicle_number = Column(String(50), nullable=False)
+    owner_phone = Column(String(50), nullable=False)
+    driver_phone = Column(String(50))
+    contact_type = Column(String(50), nullable=False)
+    is_primary = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

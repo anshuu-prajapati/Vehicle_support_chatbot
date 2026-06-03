@@ -1,49 +1,28 @@
-version: "3.9"
+version: '3.8'
 
 services:
-
   postgres:
     image: postgres:15
-    container_name: ai-support-postgres
-    restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ai_support
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "password123"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   qdrant:
-    image: qdrant/qdrant
-    container_name: ai-support-qdrant
-    restart: always
+    image: qdrant/qdrant:latest
     ports:
       - "6333:6333"
-      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
-
-  redis:
-    image: redis:7-alpine
-    container_name: ai-support-redis
-    restart: always
-    ports:
-      - "6379:6379"
-
-  api:
-    build: .
-    container_name: ai-support-api
-    restart: always
-    depends_on:
-      - postgres
-      - qdrant
-      - redis
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
 
 volumes:
   postgres_data:

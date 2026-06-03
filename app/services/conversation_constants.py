@@ -51,21 +51,23 @@ INVALID_MENU_SELECTION_RESPONSE = (
 
 MENU_CHOICES = {
     MenuAction.VEHICLE_PROBLEM: {
-        "next_state": ConversationStep.VEHICLE_NUMBER,
+        "next_state": ConversationStep.ASK_RIGHT_PERSON,
         "issue_type": "vehicle_problem",
         "ask_text": (
-            "Kripya vehicle number bataye.\n"
-            "Example:\n"
-            "DL01AB1234"
+            "क्या आप सही व्यक्ति हैं जिससे हमें बात करनी चाहिए?\n"
+            "Are you the right person we should talk to?\n\n"
+            "1️⃣ हाँ / Yes\n"
+            "2️⃣ नहीं / No"
         ),
     },
     MenuAction.ENGINEER_REQUEST: {
-        "next_state": ConversationStep.ASK_DRIVER_AVAILABILITY,
+        "next_state": ConversationStep.ASK_RIGHT_PERSON,
         "issue_type": "engineer_request",
         "ask_text": (
-            "Kya driver vehicle ke paas hai?\n"
-            "1️⃣ Haan\n"
-            "2️⃣ Nahi"
+            "क्या आप सही व्यक्ति हैं जिससे हमें बात करनी चाहिए?\n"
+            "Are you the right person we should talk to?\n\n"
+            "1️⃣ हाँ / Yes\n"
+            "2️⃣ नहीं / No"
         ),
     },
 }

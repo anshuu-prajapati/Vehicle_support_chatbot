@@ -6,3 +6,7 @@ from .chat_history import ChatHistory
 from .ticket import Ticket
 from .chat_message import ChatMessage
 from .conversation_state import ConversationState
+from .vehicle import Vehicle
+from .vehicle_status import VehicleStatus
+from .alert import Alert
+from .vehicle_contact import VehicleContact

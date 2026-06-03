@@ -1,3 +1,4 @@
+import re
 from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -11,14 +12,53 @@ DEFAULT_USER_ROLE = "driver"
 
 
 def normalize_phone_number(phone_number: str) -> str:
+    """
+    Normalize phone number to E.164 format for consistent storage and WhatsApp compatibility.
+    
+    This function handles various input formats and normalizes them to +[country][number] format.
+    Primarily designed for Indian numbers but supports international format.
+    
+    Args:
+        phone_number: Input phone number in various formats
+        
+    Returns:
+        str: Normalized phone number in E.164 format (e.g., +919876543210)
+    """
     if not phone_number:
         return phone_number
 
-    cleaned = "+".join([p for p in phone_number.strip().replace(" ", "").split("+") if p])
-    if not cleaned.startswith("+"):
-        cleaned = "+" + cleaned
+    # Clean the input - remove spaces, dashes, parentheses, dots
+    cleaned = re.sub(r'[\s\-\(\)\.]', '', phone_number.strip())
+    
+    # Handle different input formats
+    if cleaned.startswith('+'):
+        # Already has country code with +
+        normalized = cleaned
+    elif cleaned.startswith('91') and len(cleaned) == 12:
+        # Indian number with country code but no +
+        normalized = '+' + cleaned
+    elif cleaned.startswith('0') and len(cleaned) == 11:
+        # Indian number with leading 0 (remove 0 and add +91)
+        normalized = '+91' + cleaned[1:]
+    elif len(cleaned) == 10 and cleaned.isdigit():
+        # Standard Indian mobile number (10 digits)
+        normalized = '+91' + cleaned
+    else:
+        # For other formats, try to preserve as much as possible
+        if not cleaned.startswith('+'):
+            # If it looks like it might need a country code, add +91 (Indian default)
+            if len(cleaned) >= 10 and len(cleaned) <= 12 and cleaned.isdigit():
+                if not cleaned.startswith('91'):
+                    normalized = '+91' + cleaned
+                else:
+                    normalized = '+' + cleaned
+            else:
+                # For non-standard formats, add + if missing
+                normalized = '+' + cleaned if not cleaned.startswith('+') else cleaned
+        else:
+            normalized = cleaned
 
-    return cleaned
+    return normalized
 
 
 def normalize_name(name: Optional[str], phone_number: str) -> str:
