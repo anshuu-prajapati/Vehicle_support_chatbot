@@ -210,44 +210,30 @@ def _handle_collect_contact_phone(user, state, text_body: str) -> str:
 
 
 def _handle_fleet_alert_created_state(user, state, normalized, text_body: str) -> str:
+    """Handle manager's response to fleet alert."""
     context = state.context_json or {}
 
-    if normalized in ["1", "1.", "i am responsible", "i am responsible."]:
-        # Manager will handle - automatically contact driver for investigation
-        driver_phone = context.get("driver_phone")
+    # Option 1: Manager will handle this issue
+    if normalized in ["1", "1.", "haan", "haa", "yes", "handle", "main handle karunga"]:
+        # Manager keeps the alert - ask what they want to do
+        update_state(user.phone_number, CONTACT_DRIVER, context)
         
-        if driver_phone:
-            # Send investigation start message to driver
-            investigation_prompt = _build_driver_investigation_prompt()
-            send_whatsapp_message(driver_phone, investigation_prompt)
-            
-            # Set driver state to investigation
-            set_state(driver_phone, ASK_DRIVER_STOP_REASON, context)
-            
-            # Update manager state to waiting for driver response
-            update_state(user.phone_number, WAITING_MANAGER_REPLY, context)
-            
-            return (
-                "Samajh gaya. Aapko is alert ke liye responsible maana gaya hai.\n"
-                "Driver ko investigation ke liye contact kar diya gaya hai.\n"
-                "Kripya zarurat padne par update bhejiye."
-            )
-        else:
-            # No driver phone - stay in alert state
-            update_state(user.phone_number, FLEET_ALERT_CREATED, context)
-            return (
-                "Driver ka number available nahi hai.\n"
-                "Kripya driver ka phone number bhejiye ya kisi aur ko contact kare.\n"
-                "1. Handle\n"
-                "2. Contact another person\n"
-                "3. Contact driver directly"
-            )
+        driver_name = context.get("driver_name", "Driver")
+        return (
+            "Samajh gaya. Aapko is alert ke liye responsible maana gaya hai.\n\n"
+            f"Aap kya karna chahte ho?\n"
+            f"1. {driver_name} se investigation details lena\n"
+            f"2. Khud se investigation karna\n"
+            f"3. Kisi aur ko contact karna"
+        )
 
-    if normalized in ["2", "2.", "contact another person", "contact another person."]:
+    # Option 2: Assign to someone else
+    if normalized in ["2", "2.", "kisi aur ko", "assign", "transfer", "assign karo"]:
         update_state(user.phone_number, WAITING_NEW_CONTACT_NAME, context)
         return "Kripya naye contact ka naam bhejiye."
 
-    if normalized in ["3", "3.", "contact drivers directly", "contact drivers directly."]:
+    # Option 3: Contact driver directly
+    if normalized in ["3", "3.", "driver", "driver ko", "directly contact", "contact driver"]:
         driver_phone = context.get("driver_phone")
         if not driver_phone:
             update_state(user.phone_number, WAITING_NEW_CONTACT, context)
@@ -256,17 +242,19 @@ def _handle_fleet_alert_created_state(user, state, normalized, text_body: str) -
                 "Kripya driver ka phone number bhejiye."
             )
 
+        # Contact driver directly
         contact_message = _build_contact_message(context)
         send_whatsapp_message(driver_phone, contact_message)
-        update_state(user.phone_number, CONTACT_DRIVER, context)
+        update_state(user.phone_number, WAITING_MANAGER_REPLY, context)
         set_state(driver_phone, CONTACT_DRIVER, context)
         return "Driver ko alert bhej diya gaya hai. Ab driver se investigation karwayein."
 
+    # Invalid response
     return (
         "Kripya sirf 1, 2, ya 3 mein reply dein.\n"
-        "1. I am responsible\n"
-        "2. Contact another person\n"
-        "3. Contact drivers directly"
+        "1. Haan, main handle karunga\n"
+        "2. Kisi aur ko assign karo\n"
+        "3. Driver ko directly contact karo"
     )
 
 
@@ -302,11 +290,14 @@ def _handle_waiting_new_contact_phone_state(user, state, text_body: str) -> str:
     is_driver = contact_phone == context.get("driver_phone")
 
     if is_driver:
-        contact_message = _build_contact_message(updated_context)
-        send_whatsapp_message(contact_phone, contact_message)
-        update_state(user.phone_number, CONTACT_DRIVER, updated_context)
-        set_state(contact_phone, CONTACT_DRIVER, updated_context)
-        return "Driver ko alert bhej diya gaya hai. Ab driver se investigation karwayein."
+        # Send investigation prompt directly to driver
+        investigation_prompt = _build_driver_investigation_prompt()
+        send_whatsapp_message(contact_phone, investigation_prompt)
+        # Manager stays in WAITING_MANAGER_REPLY - they already delegated
+        update_state(user.phone_number, WAITING_MANAGER_REPLY, updated_context)
+        # Driver is ready to answer investigation questions
+        set_state(contact_phone, ASK_DRIVER_STOP_REASON, updated_context)
+        return "Driver ko investigation prompt bhej diya gaya hai.\nJab driver jawab de, aapko update milega."
 
     contact_message = _build_transfer_alert_message(updated_context)
     send_whatsapp_message(contact_phone, contact_message)
@@ -389,9 +380,9 @@ def _handle_ask_need_mechanic_state(user, state, text_body: str) -> str:
 
 def _handle_ask_expected_restart_time_state(user, state, text_body: str) -> str:
     restart_time = text_body.strip()
-    if not restart_time or len(restart_time) < 2:
-        logger.warning("Invalid restart time from %s: %s", user.phone_number, text_body)
-        return "Kripya expected restart time clearly batayein."
+    if not restart_time:
+        logger.warning("Invalid restart time from %s: empty", user.phone_number)
+        return "Kripya expected restart time batayein. (Jaise: 30 mins, 1 ghanta, 2 hours)"
 
     context = state.context_json or {}
     investigation = {
@@ -437,22 +428,11 @@ def _handle_ask_expected_restart_time_state(user, state, text_body: str) -> str:
 
 
 def _handle_contact_driver_state(user, state, text_body: str) -> str:
+    """Handle manager's follow-up options after accepting responsibility."""
     normalized = _normalize_text(text_body)
     context = state.context_json or {}
 
-    if normalized in ["investigate", "investigation", "driver investigating", "driver investigate"]:
-        update_state(user.phone_number, ASK_DRIVER_STOP_REASON, context)
-        return _build_driver_investigation_prompt()
-
-    if normalized in ["summary", "update", "report", "status"]:
-        update_state(user.phone_number, SUMMARY_SENT, context)
-        return "Summary note kar liya gaya hai. Aapka update send kar diya gaya hai."
-
-    if normalized in ["close", "closed", "resolved", "done", "complete"]:
-        update_state(user.phone_number, CLOSED, context)
-        return "Fleet alert closed. Dhanyavaad."
-
-    # If this is a driver's first response to the alert, start troubleshooting flow
+    # Check if this is actually a driver responding to an alert
     driver_phone = context.get("driver_phone")
     if user.phone_number == driver_phone:
         # Driver is responding to the alert - start troubleshooting
@@ -463,10 +443,60 @@ def _handle_contact_driver_state(user, state, text_body: str) -> str:
             "Kya aap fir se is vehicle ko chalate ho? (Haan / Nahi)"
         )
 
+    # Manager's options after accepting responsibility
+    # Option 1: Get driver investigation
+    if normalized in ["1", "1.", "driver", "get driver", "driver investigation"]:
+        driver_phone = context.get("driver_phone")
+        
+        if driver_phone:
+            # Send investigation start message to driver
+            investigation_prompt = _build_driver_investigation_prompt()
+            send_whatsapp_message(driver_phone, investigation_prompt)
+            
+            # Set driver state to investigation
+            set_state(driver_phone, ASK_DRIVER_STOP_REASON, context)
+            
+            # Update manager state to waiting for driver response
+            update_state(user.phone_number, WAITING_MANAGER_REPLY, context)
+            
+            return (
+                f"Driver ko investigation prompt bhej diya gaya hai.\n"
+                f"Jab driver details provide karega, aapko summary bhej denge."
+            )
+        else:
+            update_state(user.phone_number, CONTACT_DRIVER, context)
+            return (
+                "Driver ka number available nahi hai.\n"
+                "Kripya driver ka phone number bhejiye."
+            )
+
+    # Option 2: Manager investigates themselves
+    if normalized in ["2", "2.", "self", "myself", "khud se", "mara"]:
+        update_state(user.phone_number, ASK_DRIVER_STOP_REASON, context)
+        return (
+            "Theek hai. Aap investigation ke saath agad badhe.\n\n"
+            "Pehle bataiye - vehicle kyun ruk gaya? Options:\n"
+            "1. Breakdown\n"
+            "2. Maintenance\n"
+            "3. Waiting Load\n"
+            "4. Leave\n"
+            "5. Other"
+        )
+
+    # Option 3: Contact someone else
+    if normalized in ["3", "3.", "other", "contact", "kisi aur ko", "else"]:
+        update_state(user.phone_number, WAITING_NEW_CONTACT_NAME, context)
+        return (
+            "Theek hai. Kripya us contact person ka naam batayein:\n"
+            "(Jaise: Supervisor, Owner, Mechanic, etc.)"
+        )
+
+    # Invalid response - show options again
     return (
-        "Driver ko contact kar diya gaya hai.\n"
-        "Aapka update note kar liya gaya hai.\n"
-        "Agar issue close ho gaya ho toh 'closed' bhejiye."
+        "Kripya koi valid option chune:\n"
+        "1. Driver se investigation details lena\n"
+        "2. Khud se investigation karna\n"
+        "3. Kisi aur ko contact karna"
     )
 
 

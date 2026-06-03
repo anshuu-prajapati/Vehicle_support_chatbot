@@ -11,6 +11,8 @@ from app.api.solutions import router as solution_router
 from app.api.search import router as search_router
 from app.api.rag import router as rag_router
 from app.api.webhook import router as webhook_router
+from app.api.users import router as users_router
+from app.api.vehicles import router as vehicles_router
 from scheduler.vehicle_monitor import start_scheduler, stop_scheduler
 
 
@@ -33,6 +35,8 @@ app.include_router(solution_router)
 app.include_router(search_router)
 app.include_router(rag_router)
 app.include_router(webhook_router)
+app.include_router(users_router)
+app.include_router(vehicles_router)
 
 
 @app.on_event("startup")
