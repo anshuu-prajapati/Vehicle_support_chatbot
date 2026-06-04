@@ -123,6 +123,31 @@ def run_schema_migrations():
                     text("CREATE INDEX IF NOT EXISTS ix_users_role ON users (role)")
                 )
 
+    # Add company_name column to vehicles table if it exists
+    if "vehicles" in table_names:
+        vehicle_columns = [column["name"] for column in inspector.get_columns("vehicles")]
+        with engine.begin() as connection:
+            if "company_name" not in vehicle_columns:
+                print("Adding company_name column to vehicles table...")
+                connection.execute(
+                    text("ALTER TABLE vehicles ADD COLUMN company_name VARCHAR(200)")
+                )
+                # Update existing records with dummy company names
+                connection.execute(
+                    text("""
+                        UPDATE vehicles 
+                        SET company_name = CASE 
+                            WHEN id % 4 = 0 THEN 'Tech Solutions Pvt Ltd'
+                            WHEN id % 4 = 1 THEN 'Global Logistics Corp'
+                            WHEN id % 4 = 2 THEN 'Swift Transport Services'
+                            WHEN id % 4 = 3 THEN 'Metro Fleet Management'
+                            ELSE 'Tech Solutions Pvt Ltd'
+                        END
+                        WHERE company_name IS NULL
+                    """)
+                )
+                print("Company names added to existing vehicles")
+
     if "conversation_states" in table_names:
         conversation_columns = [column["name"] for column in inspector.get_columns("conversation_states")]
         conversation_indexes = inspector.get_indexes("conversation_states")

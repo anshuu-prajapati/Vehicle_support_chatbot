@@ -54,8 +54,9 @@ MENU_CHOICES = {
         "next_state": ConversationStep.ASK_RIGHT_PERSON,
         "issue_type": "vehicle_problem",
         "ask_text": (
-            "क्या आप सही व्यक्ति हैं जिससे हमें बात करनी चाहिए?\n"
-            "Are you the right person we should talk to?\n\n"
+            # This will be dynamically replaced with company name in menu_service.py
+            "क्या हम {company_name} के मैनेजर से बात कर रहे हैं?\n"
+            "Are we talking to the manager of {company_name}?\n\n"
             "1️⃣ हाँ / Yes\n"
             "2️⃣ नहीं / No"
         ),
@@ -64,8 +65,9 @@ MENU_CHOICES = {
         "next_state": ConversationStep.ASK_RIGHT_PERSON,
         "issue_type": "engineer_request",
         "ask_text": (
-            "क्या आप सही व्यक्ति हैं जिससे हमें बात करनी चाहिए?\n"
-            "Are you the right person we should talk to?\n\n"
+            # This will be dynamically replaced with company name in menu_service.py
+            "क्या हम {company_name} के मैनेजर से बात कर रहे हैं?\n"
+            "Are we talking to the manager of {company_name}?\n\n"
             "1️⃣ हाँ / Yes\n"
             "2️⃣ नहीं / No"
         ),

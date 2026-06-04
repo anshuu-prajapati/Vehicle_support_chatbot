@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
 from app.services.vehicle_alert_service import VehicleAlertService
+from app.services.state_manager import StateManager
 from app.clients.vehicle_api_client import (
     VehicleAPIClient,
     VehicleAPIException,
@@ -50,8 +51,9 @@ async def send_breakdown_alerts(db: Session = Depends(get_db)):
     This endpoint:
     1. Queries database for vehicles with 'not working' status
     2. Gets their locations and contact information  
-    3. Sends WhatsApp alerts to managers/owners
-    4. Returns summary of alerts sent
+    3. Resets conversation state for all contacts (fresh start)
+    4. Sends WhatsApp alerts to managers/owners
+    5. Returns summary of alerts sent
     
     Returns:
         VehicleAlertResponse with alert sending results and vehicle details
@@ -59,8 +61,9 @@ async def send_breakdown_alerts(db: Session = Depends(get_db)):
     try:
         logger.info("Processing vehicle breakdown alert request")
         
-        # Initialize alert service
+        # Initialize alert service and state manager
         alert_service = VehicleAlertService(db)
+        state_manager = StateManager(db)
         
         # Get broken vehicles data
         broken_vehicles = alert_service.get_broken_vehicles_with_contacts()
@@ -74,11 +77,50 @@ async def send_breakdown_alerts(db: Session = Depends(get_db)):
                 vehicles_data=[]
             )
         
+        # RESET CONVERSATION STATE for all contacts who will receive alerts
+        # This ensures fresh conversation start when they reply
+        contacts_to_reset = set()
+        
+        for vehicle_data in broken_vehicles:
+            # Reset state for manager if they have phone number
+            if vehicle_data.get("manager_phone"):
+                contacts_to_reset.add(vehicle_data["manager_phone"])
+            
+            # Reset state for all vehicle contacts (owners, drivers, etc.)
+            for contact in vehicle_data.get("contacts", []):
+                if contact.get("owner_phone"):
+                    contacts_to_reset.add(contact["owner_phone"])
+                if contact.get("driver_phone"):
+                    contacts_to_reset.add(contact["driver_phone"])
+        
+        # Reset conversation state for all contacts
+        reset_count = 0
+        for phone_number in contacts_to_reset:
+            if phone_number:  # Skip empty/None phone numbers
+                try:
+                    state_manager.clear_state(phone_number)
+                    reset_count += 1
+                    logger.info(
+                        "Reset conversation state for breakdown alert recipient",
+                        extra={"phone_number": phone_number}
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to reset state for contact",
+                        extra={"phone_number": phone_number, "error": str(e)}
+                    )
+        
+        logger.info(f"Reset conversation state for {reset_count} contacts before sending alerts")
+        
         # Send alerts to managers
         result = alert_service.send_alert_to_managers(broken_vehicles)
         
+        # Add reset information to the result
+        result["contacts_reset"] = reset_count
+        
         logger.info(
-            f"Vehicle alert process completed: {result['alerts_sent']} alerts sent for {result['vehicles_count']} vehicles"
+            f"Vehicle alert process completed: {result['alerts_sent']} alerts sent, "
+            f"{reset_count} conversation states reset for {result['vehicles_count']} vehicles"
         )
         
         return VehicleAlertResponse(**result)

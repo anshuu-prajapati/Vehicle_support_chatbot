@@ -1,12 +1,15 @@
 import logging
 import re
 from typing import Optional, Tuple
+from sqlalchemy.orm import Session
 
 from app.services.greeting_service import GreetingService
 from app.services.menu_service import MenuService
 from app.services.state_manager import ConversationStep, StateManager
 from app.services.ticket_service import create_ticket
 from app.services.whatsapp_service import send_whatsapp_message
+from app.db.models.vehicle import Vehicle
+from app.db.models.user import User
 
 logger = logging.getLogger("app.support_flow")
 
@@ -162,11 +165,50 @@ def _send_whatsapp_with_detailed_logging(phone_number: str, message: str, contex
             return False, f"Failed to send message: {error_msg}"
 
 
-def handle_support_message(user, text_body: str, state_manager: StateManager) -> str:
+def _get_company_name_for_user(user_phone: str, db: Session) -> str:
+    """
+    Get company name for a user based on their associated vehicle.
+    
+    Args:
+        user_phone: User's phone number
+        db: Database session
+        
+    Returns:
+        Company name or default company name
+    """
+    try:
+        # First, get the user
+        user = db.query(User).filter(User.phone_number == user_phone).first()
+        if not user:
+            logger.warning(f"User not found for phone: {user_phone}")
+            return "Tech Solutions Pvt Ltd"
+        
+        # Find vehicle associated with this user (as manager, supervisor, or driver)
+        vehicle = db.query(Vehicle).filter(
+            (Vehicle.manager_id == user.id) |
+            (Vehicle.supervisor_id == user.id) |
+            (Vehicle.driver_id == user.id)
+        ).first()
+        
+        if vehicle and vehicle.company_name:
+            logger.info(f"Found company name '{vehicle.company_name}' for user {user_phone}")
+            return vehicle.company_name
+        
+        # If no vehicle found or no company name, return default
+        logger.info(f"No vehicle/company found for user {user_phone}, using default")
+        return "Tech Solutions Pvt Ltd"
+        
+    except Exception as e:
+        logger.error(f"Error getting company name for user {user_phone}: {str(e)}")
+        return "Tech Solutions Pvt Ltd"
+
+
+def handle_support_message(user, text_body: str, state_manager: StateManager, db: Session = None) -> str:
     normalized = _normalize_text(text_body)
     greeting_service = GreetingService(state_manager)
-    menu_service = MenuService(state_manager)
+    menu_service = MenuService(state_manager, db)
 
+    # Handle greetings - always show welcome menu
     if greeting_service.is_greeting(normalized):
         logger.info(
             "User entered greeting",
@@ -175,6 +217,7 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
         greeting_service.route_to_main_menu(user.phone_number)
         return greeting_service.send_welcome(user.name)
 
+    # Get current state (state might have been reset in webhook if this is greeting/menu selection)
     state = state_manager.get_state(user.phone_number)
     if state is None:
         logger.info(
@@ -187,22 +230,43 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
     current_step = state.current_step
     context = state_manager.get_context(user.phone_number)
 
+    # Handle menu selection (1 or 2) - this ensures deterministic behavior
     if current_step == ConversationStep.MAIN_MENU.value:
-        return menu_service.handle_menu_selection(user.phone_number, text_body)
-
-    # New unified flow - Ask if user is the right person
-    if current_step == ConversationStep.ASK_RIGHT_PERSON.value:
-        if _is_affirmative(normalized) or normalized in ["1", "haan", "yes", "haa"]:
-            state_manager.set_state(user.phone_number, ConversationStep.ASK_PROBLEM_DESCRIPTION)
+        # Special case: If user presses "1" and they were contacted as a driver or supervisor for GPS repair
+        if normalized == "1" and context.get("contact_type") in ["driver", "supervisor"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_NEAR_VEHICLE)
             logger.info(
-                "Right person confirmed",
-                extra={"phone_number": user.phone_number, "new_state": ConversationStep.ASK_PROBLEM_DESCRIPTION.value},
+                f"{context.get('contact_type', 'contact')} pressed 1 for GPS repair - starting GPS troubleshooting",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_NEAR_VEHICLE.value}
             )
             return (
-                "बढ़िया! मशीन में क्या समस्या है?\n"
-                "Great! What is the problem in the machine?\n\n"
-                "कृपया समस्या का विवरण दें।\n"
-                "Please describe the problem."
+                "GPS सिस्टम को ठीक करने के लिए हमें आपकी मदद चाहिए।\n"
+                "We need your help to fix the GPS system.\n\n"
+                "क्या आप वाहन के पास हैं?\n"
+                "Are you near the vehicle?\n\n"
+                "1️⃣ हाँ / Yes\n"
+                "2️⃣ नहीं / No"
+            )
+        
+        logger.info(
+            "Processing menu selection in MAIN_MENU state",
+            extra={"phone_number": user.phone_number, "text": text_body}
+        )
+        return menu_service.handle_menu_selection(user.phone_number, text_body)
+
+    # New unified flow - Ask if user is the manager of specific company
+    if current_step == ConversationStep.ASK_RIGHT_PERSON.value:
+        if _is_affirmative(normalized) or normalized in ["1", "haan", "yes", "haa"]:
+            state_manager.set_state(user.phone_number, ConversationStep.ASK_CAN_PROVIDE_OTHER_NUMBER)
+            logger.info(
+                "Right person confirmed - asking for other number",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.ASK_CAN_PROVIDE_OTHER_NUMBER.value},
+            )
+            return (
+                "बढ़िया! क्या हमें आपके साथ ही जारी रखना चाहिए या किसी और से बात करनी चाहिए?\n"
+                "Great! Should we continue with you or should we talk with somebody else?\n\n"
+                "1️⃣ मेरे साथ जारी रखें / Continue with me\n"
+                "2️⃣ किसी और से बात करें / Talk with someone else"
             )
 
         if _is_negative(normalized) or normalized in ["2", "nahi", "no", "nahin"]:
@@ -221,11 +285,229 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
             "Invalid right person response",
             extra={"phone_number": user.phone_number, "text": text_body},
         )
+        
+        # Get company name for this user and show the proper message
+        company_name = _get_company_name_for_user(user.phone_number, db) if db else "Tech Solutions Pvt Ltd"
         return (
             "कृपया वैध विकल्प चुनें।\n"
             "Please select a valid option.\n\n"
+            f"क्या हम {company_name} के मैनेजर से बात कर रहे हैं?\n"
+            f"Are we talking to the manager of {company_name}?\n\n"
             "1️⃣ हाँ / Yes\n"
             "2️⃣ नहीं / No"
+        )
+
+    # Handle if manager can provide other number
+    if current_step == ConversationStep.ASK_CAN_PROVIDE_OTHER_NUMBER.value:
+        if _is_affirmative(normalized) or normalized in ["1", "haan", "yes", "haa", "continue", "मेरे साथ"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_NEAR_VEHICLE)
+            logger.info(
+                "Manager wants to continue with themselves - starting GPS repair flow",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_NEAR_VEHICLE.value},
+            )
+            return (
+                "GPS सिस्टम को ठीक करने के लिए हमें आपकी मदद चाहिए।\n"
+                "We need your help to fix the GPS system.\n\n"
+                "क्या आप वाहन के पास हैं?\n"
+                "Are you near the vehicle?\n\n"
+                "1️⃣ हाँ / Yes\n"
+                "2️⃣ नहीं / No"
+            )
+
+        if _is_negative(normalized) or normalized in ["2", "nahi", "no", "nahin", "someone else", "किसी और"]:
+            state_manager.set_state(user.phone_number, ConversationStep.ASK_CONTACT_TYPE)
+            logger.info(
+                "Manager wants to talk with someone else - asking contact type with driver info",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.ASK_CONTACT_TYPE.value},
+            )
+            
+            # Get driver number from database for this user's vehicle
+            driver_number = "Not available"
+            if db:
+                try:
+                    # First, get the user
+                    manager = db.query(User).filter(User.phone_number == user.phone_number).first()
+                    if manager:
+                        # Find vehicle where this user is manager
+                        vehicle = db.query(Vehicle).filter(Vehicle.manager_id == manager.id).first()
+                        if vehicle and vehicle.driver_id:
+                            # Get driver details
+                            driver = db.query(User).filter(User.id == vehicle.driver_id).first()
+                            if driver and driver.phone_number:
+                                driver_number = driver.phone_number
+                                logger.info(f"Found driver number {driver_number} for manager {user.phone_number}")
+                except Exception as e:
+                    logger.error(f"Error fetching driver number: {str(e)}")
+            
+            return (
+                "क्या हमें सुपरवाइजर या ड्राइवर से संपर्क करना चाहिए?\n"
+                "Should we contact supervisor or driver?\n\n"
+                "1️⃣ सुपरवाइजर / Supervisor\n"
+                f"2️⃣ ड्राइवर / Driver whose number is {driver_number}"
+            )
+
+        logger.warning(
+            "Invalid continue or someone else response",
+            extra={"phone_number": user.phone_number, "text": text_body},
+        )
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "क्या हमें आपके साथ ही जारी रखना चाहिए या किसी और से बात करनी चाहिए?\n"
+            "Should we continue with you or should we talk with somebody else?\n\n"
+            "1️⃣ मेरे साथ जारी रखें / Continue with me\n"
+            "2️⃣ किसी और से बात करें / Talk with someone else"
+        )
+
+    # Handle contact type selection
+    if current_step == ConversationStep.ASK_CONTACT_TYPE.value:
+        if normalized in ["1", "supervisor", "सुपरवाइजर"]:
+            state_manager.update_context(user.phone_number, {"contact_type": "supervisor"})
+            state_manager.set_state(user.phone_number, ConversationStep.ASK_CONTACT_NUMBER)
+            logger.info(
+                "Contact type selected: supervisor",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.ASK_CONTACT_NUMBER.value},
+            )
+            return (
+                "सुपरवाइजर का फोन नंबर दें।\n"
+                "Please provide supervisor's phone number.\n\n"
+                "उदाहरण / Example: 9876543210"
+            )
+
+        if normalized in ["2", "driver", "ड्राइवर"]:
+            # Use driver number from database
+            driver_number = None
+            if db:
+                try:
+                    # Get the manager user
+                    manager = db.query(User).filter(User.phone_number == user.phone_number).first()
+                    if manager:
+                        # Find vehicle where this user is manager
+                        vehicle = db.query(Vehicle).filter(Vehicle.manager_id == manager.id).first()
+                        if vehicle and vehicle.driver_id:
+                            # Get driver details
+                            driver = db.query(User).filter(User.id == vehicle.driver_id).first()
+                            if driver and driver.phone_number:
+                                driver_number = driver.phone_number
+                                logger.info(f"Using driver number {driver_number} from database")
+                except Exception as e:
+                    logger.error(f"Error fetching driver number for contact: {str(e)}")
+            
+            if driver_number:
+                # Directly proceed to send message to driver using database number
+                state_manager.update_context(user.phone_number, {
+                    "contact_type": "driver",
+                    "contact_number": driver_number,
+                    "original_contact_input": driver_number
+                })
+                
+                # Create driver message
+                breakdown_message = (
+                    "🚨 वाहन सहायता अलर्ट / Vehicle Support Alert\n\n"
+                    "वाहन में तकनीकी समस्या है - GPS काम नहीं कर रहा है और डेटा ट्रांसमिशन रुका हुआ है।\n"
+                    "Vehicle has technical issues - GPS is not working and data transmission has stopped.\n\n"
+                    "आप ड्राइवर हैं। कृपया सहायता के लिए 1 दबाएं।\n"
+                    "You are the driver. Please press 1 for assistance.\n\n"
+                    "1️⃣ Press 1 for AI assistance"
+                )
+                
+                # Send message to driver
+                success, error_message = _send_whatsapp_with_detailed_logging(
+                    driver_number, 
+                    breakdown_message,
+                    context={
+                        "original_user": user.phone_number,
+                        "contact_type": "driver",
+                        "original_input": "database_driver"
+                    }
+                )
+                
+                if success:
+                    # Pre-create conversation state for the driver
+                    contact_state_manager = StateManager(db) if db else state_manager
+                    contact_state_manager.set_state(
+                        driver_number,
+                        ConversationStep.MAIN_MENU,
+                        context_json={"contact_type": "driver", "alert_received": True}
+                    )
+                    
+                    # Clear original user's conversation state
+                    state_manager.clear_state(user.phone_number)
+                    logger.info(
+                        "Driver alert sent successfully using database number",
+                        extra={
+                            "original_phone": user.phone_number,
+                            "driver_phone": driver_number
+                        }
+                    )
+                    
+                    return (
+                        f"✅ सफलतापूर्वक संदेश भेजा गया!\n"
+                        f"✅ Message sent successfully!\n\n"
+                        f"📱 संदेश भेजा गया (ड्राइवर / Driver): {driver_number}\n"
+                        f"📱 Message sent to (Driver): {driver_number}\n\n"
+                        "उन्हें बताया गया है कि GPS में समस्या है और सहायता की जरूरत है।\n"
+                        "They have been informed that there are GPS issues and assistance is needed.\n\n"
+                        "वे जल्दी ही हमसे संपर्क करेंगे।\n"
+                        "They will contact us soon for support."
+                    )
+                else:
+                    logger.error(
+                        "Failed to send driver alert using database number",
+                        extra={
+                            "original_phone": user.phone_number,
+                            "driver_phone": driver_number,
+                            "error": error_message
+                        }
+                    )
+                    return (
+                        f"❌ ड्राइवर को संदेश भेजने में त्रुटि: {error_message}\n"
+                        f"❌ Error sending message to driver: {error_message}\n\n"
+                        f"ड्राइवर का नंबर: {driver_number}\n"
+                        f"Driver's number: {driver_number}\n\n"
+                        "कृपया बाद में कोशिश करें।\n"
+                        "Please try again later."
+                    )
+            else:
+                # No driver number found, ask for manual input
+                state_manager.update_context(user.phone_number, {"contact_type": "driver"})
+                state_manager.set_state(user.phone_number, ConversationStep.ASK_CONTACT_NUMBER)
+                logger.warning(
+                    "No driver number found in database, asking for manual input",
+                    extra={"phone_number": user.phone_number}
+                )
+                return (
+                    "ड्राइवर का नंबर डेटाबेस में नहीं मिला। कृपया ड्राइवर का फोन नंबर दें।\n"
+                    "Driver number not found in database. Please provide driver's phone number.\n\n"
+                    "उदाहरण / Example: 9876543210"
+                )
+
+        logger.warning(
+            "Invalid contact type response",
+            extra={"phone_number": user.phone_number, "text": text_body},
+        )
+        
+        # Get driver number again for error message
+        driver_number = "Not available"
+        if db:
+            try:
+                manager = db.query(User).filter(User.phone_number == user.phone_number).first()
+                if manager:
+                    vehicle = db.query(Vehicle).filter(Vehicle.manager_id == manager.id).first()
+                    if vehicle and vehicle.driver_id:
+                        driver = db.query(User).filter(User.id == vehicle.driver_id).first()
+                        if driver and driver.phone_number:
+                            driver_number = driver.phone_number
+            except Exception as e:
+                logger.error(f"Error fetching driver number for error message: {str(e)}")
+        
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "क्या हमें सुपरवाइजर या ड्राइवर से संपर्क करना चाहिए?\n"
+            "Should we contact supervisor or driver?\n\n"
+            "1️⃣ सुपरवाइजर / Supervisor\n"
+            f"2️⃣ ड्राइवर / Driver whose number is {driver_number}"
         )
 
     # Handle problem description
@@ -242,15 +524,18 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
             "उदाहरण / Example: DL01AB1234"
         )
 
-    # Handle contact number for wrong person scenario
+    # Handle contact number for wrong person scenario OR for supervisor/driver
     if current_step == ConversationStep.ASK_CONTACT_NUMBER.value:
         contact_input = text_body.strip()
+        context = state_manager.get_context(user.phone_number)
+        contact_type = context.get("contact_type", "manager")  # Default to manager for backward compatibility
         
         logger.info(
             "Processing contact number input",
             extra={
                 "original_phone": user.phone_number,
-                "contact_input": contact_input
+                "contact_input": contact_input,
+                "contact_type": contact_type
             }
         )
         
@@ -263,7 +548,8 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
                 extra={
                     "original_phone": user.phone_number,
                     "contact_input": contact_input,
-                    "validation_error": validation_error
+                    "validation_error": validation_error,
+                    "contact_type": contact_type
                 }
             )
             return (
@@ -279,19 +565,39 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
         # Store the contact information
         state_manager.update_context(user.phone_number, {
             "contact_number": normalized_contact,
-            "original_contact_input": contact_input
+            "original_contact_input": contact_input,
+            "contact_type": contact_type
         })
         
-        # Create breakdown notification message
-        breakdown_message = (
-            "🚨 वाहन सहायता अलर्ट / Vehicle Support Alert\n\n"
-            "यह मशीन टूटी हुई अवस्था में है और हमारी सहायता की आवश्यकता है।\n"
-            "This machine is in breakdown state and needs our assistance.\n\n"
-            "क्या आपको सहायता की आवश्यकता है?\n"
-            "Do you need assistance?\n\n"
-            "कृपया 'हाँ' या 'Yes' भेजकर जवाब दें।\n"
-            "Please reply with 'हाँ' or 'Yes' to start support."
-        )
+        # Create appropriate message based on contact type
+        if contact_type == "supervisor":
+            breakdown_message = (
+                "🚨 वाहन सहायता अलर्ट / Vehicle Support Alert\n\n"
+                "वाहन में तकनीकी समस्या है - GPS काम नहीं कर रहा है और डेटा ट्रांसमिशन रुका हुआ है।\n"
+                "Vehicle has technical issues - GPS is not working and data transmission has stopped.\n\n"
+                "आप सुपरवाइजर हैं। कृपया सहायता के लिए 1 दबाएं।\n"
+                "You are the supervisor. Please press 1 for assistance.\n\n"
+                "1️⃣ Press 1 for AI assistance"
+            )
+        elif contact_type == "driver":
+            breakdown_message = (
+                "🚨 वाहन सहायता अलर्ट / Vehicle Support Alert\n\n"
+                "वाहन में तकनीकी समस्या है - GPS काम नहीं कर रहा है और डेटा ट्रांसमिशन रुका हुआ है।\n"
+                "Vehicle has technical issues - GPS is not working and data transmission has stopped.\n\n"
+                "आप ड्राइवर हैं। कृपया सहायता के लिए 1 दबाएं।\n"
+                "You are the driver. Please press 1 for assistance.\n\n"
+                "1️⃣ Press 1 for AI assistance"
+            )
+        else:
+            # Default message for manager/other contacts (backward compatibility)
+            breakdown_message = (
+                "🚨 वाहन सहायता अलर्ट / Vehicle Support Alert\n\n"
+                "वाहन में तकनीकी समस्या है - GPS काम नहीं कर रहा है और डेटा ट्रांसमिशन रुका हुआ है।\n"
+                "Vehicle has technical issues - GPS is not working and data transmission has stopped.\n\n"
+                "हम आपकी सहायता के लिए यहाँ हैं।\n"
+                "We are here to help you.\n\n"
+                "1️⃣ Press 1 for AI assistance"
+            )
         
         # Send breakdown notification with enhanced error handling
         success, error_message = _send_whatsapp_with_detailed_logging(
@@ -299,28 +605,43 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
             breakdown_message,
             context={
                 "original_user": user.phone_number,
-                "contact_type": "breakdown_alert",
+                "contact_type": contact_type,
                 "original_input": contact_input
             }
         )
         
         if success:
-            # Clear conversation state after successful message
+            # Pre-create conversation state for the contact person with appropriate context
+            contact_state_manager = StateManager(db) if db else state_manager
+            contact_state_manager.set_state(
+                normalized_contact,
+                ConversationStep.MAIN_MENU,
+                context_json={"contact_type": contact_type, "alert_received": True}
+            )
+            
+            # Clear original user's conversation state after successful message
             state_manager.clear_state(user.phone_number)
             logger.info(
-                "Breakdown alert successfully sent to contact person",
+                "Breakdown alert successfully sent to contact person with pre-created state",
                 extra={
                     "original_phone": user.phone_number,
                     "contact_phone": normalized_contact,
+                    "contact_type": contact_type,
                     "original_input": contact_input
                 }
             )
             
+            contact_type_display = {
+                "supervisor": "सुपरवाइजर / Supervisor",
+                "driver": "ड्राइवर / Driver", 
+                "manager": "मैनेजर / Manager"
+            }.get(contact_type, contact_type)
+            
             return (
                 f"✅ सफलतापूर्वक संदेश भेजा गया!\n"
                 f"✅ Message sent successfully!\n\n"
-                f"📱 संदेश भेजा गया: {normalized_contact}\n"
-                f"📱 Message sent to: {normalized_contact}\n\n"
+                f"📱 संदेश भेजा गया ({contact_type_display}): {normalized_contact}\n"
+                f"📱 Message sent to ({contact_type_display}): {normalized_contact}\n\n"
                 "उन्हें बताया गया है कि मशीन टूटी हुई है और सहायता की जरूरत है।\n"
                 "They have been informed that the machine is broken and needs assistance.\n\n"
                 "वे जल्दी ही हमसे संपर्क करेंगे।\n"
@@ -332,6 +653,7 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
                 extra={
                     "original_phone": user.phone_number,
                     "contact_phone": normalized_contact,
+                    "contact_type": contact_type,
                     "error": error_message,
                     "original_input": contact_input
                 }
@@ -347,6 +669,121 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
                 f"Number you provided: {normalized_contact}"
             )
 
+    # GPS Repair Flow - Ask if driver is near vehicle
+    if current_step == ConversationStep.GPS_REPAIR_NEAR_VEHICLE.value:
+        if _is_affirmative(normalized) or normalized in ["1", "haan", "yes", "haa"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_IGNITION)
+            logger.info(
+                "Driver is near vehicle - asking to turn on ignition",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_IGNITION.value},
+            )
+            return (
+                "बहुत अच्छा! अब वाहन की इग्निशन ऑन करें।\n"
+                "Great! Now turn on the vehicle ignition.\n\n"
+                "इग्निशन ऑन करने के बाद '1' दबाएं।\n"
+                "Press '1' after turning on the ignition.\n\n"
+                "1️⃣ इग्निशन ऑन कर दिया / Ignition turned on"
+            )
+
+        if _is_negative(normalized) or normalized in ["2", "nahi", "no", "nahin"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_SCHEDULE_CALLBACK)
+            logger.info(
+                "Driver is not near vehicle - asking for callback schedule",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_SCHEDULE_CALLBACK.value},
+            )
+            return (
+                "कोई बात नहीं। क्या आप वाहन के पास जा सकते हैं या हमें बताएं कि हमें आपको कब वापस कॉल करना चाहिए?\n"
+                "No problem. Can you go close to the vehicle or tell us when we should contact you back?\n\n"
+                "1️⃣ मैं वाहन के पास जा सकता हूं / I can go to the vehicle\n"
+                "2️⃣ बाद में कॉल करें / Call back later"
+            )
+
+        logger.warning(
+            "Invalid near vehicle response",
+            extra={"phone_number": user.phone_number, "text": text_body},
+        )
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "क्या आप वाहन के पास हैं?\n"
+            "Are you near the vehicle?\n\n"
+            "1️⃣ हाँ / Yes\n"
+            "2️⃣ नहीं / No"
+        )
+
+    # GPS Repair Flow - Handle ignition confirmation
+    if current_step == ConversationStep.GPS_REPAIR_IGNITION.value:
+        if normalized in ["1", "done", "ignition on", "ok"]:
+            # Clear state as GPS repair process is complete for now
+            state_manager.clear_state(user.phone_number)
+            logger.info(
+                "GPS repair ignition step completed",
+                extra={"phone_number": user.phone_number}
+            )
+            return (
+                "बहुत बढ़िया! इग्निशन ऑन करने के बाद GPS सिस्टम को काम करना शुरू कर देना चाहिए।\n"
+                "Excellent! After turning on the ignition, the GPS system should start working.\n\n"
+                "कृपया 2-3 मिनट इंतजार करें और फिर चेक करें कि GPS सिग्नल आ रहा है या नहीं।\n"
+                "Please wait 2-3 minutes and then check if GPS signal is working.\n\n"
+                "अगर फिर भी समस्या है तो हमें बताएं।\n"
+                "If there are still issues, please let us know.\n\n"
+                "धन्यवाद! / Thank you!"
+            )
+
+        logger.warning(
+            "Invalid ignition response - expecting confirmation",
+            extra={"phone_number": user.phone_number, "text": text_body},
+        )
+        return (
+            "कृपया इग्निशन ऑन करने के बाद '1' दबाएं।\n"
+            "Please press '1' after turning on the ignition.\n\n"
+            "1️⃣ इग्निशन ऑन कर दिया / Ignition turned on"
+        )
+
+    # GPS Repair Flow - Handle callback scheduling
+    if current_step == ConversationStep.GPS_REPAIR_SCHEDULE_CALLBACK.value:
+        if normalized in ["1", "go to vehicle", "जा सकता"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_IGNITION)
+            logger.info(
+                "Driver will go to vehicle - proceeding to ignition step",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_IGNITION.value},
+            )
+            return (
+                "बहुत अच्छा! वाहन के पास जाकर इग्निशन ऑन करें।\n"
+                "Great! Go to the vehicle and turn on the ignition.\n\n"
+                "इग्निशन ऑन करने के बाद '1' दबाएं।\n"
+                "Press '1' after turning on the ignition.\n\n"
+                "1️⃣ इग्निशन ऑन कर दिया / Ignition turned on"
+            )
+
+        if normalized in ["2", "call later", "बाद में"]:
+            # Clear state and schedule callback (in real implementation, this could store callback time)
+            state_manager.clear_state(user.phone_number)
+            logger.info(
+                "Driver requested callback later",
+                extra={"phone_number": user.phone_number}
+            )
+            return (
+                "ठीक है। हम आपको बाद में कॉल करेंगे।\n"
+                "Okay. We will call you back later.\n\n"
+                "कृपया बताएं कि हमें कितने घंटे बाद कॉल करना चाहिए? (जैसे: 1 घंटे बाद, 2 घंटे बाद)\n"
+                "Please tell us how many hours later we should call? (Example: after 1 hour, after 2 hours)\n\n"
+                "या आप जब वाहन के पास हों तो हमें कॉल कर सकते हैं।\n"
+                "Or you can call us when you are near the vehicle."
+            )
+
+        logger.warning(
+            "Invalid callback scheduling response",
+            extra={"phone_number": user.phone_number, "text": text_body},
+        )
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "1️⃣ मैं वाहन के पास जा सकता हूं / I can go to the vehicle\n"
+            "2️⃣ बाद में कॉल करें / Call back later"
+        )
+
+    # Continue with existing diagnostic flow states
     if current_step == ConversationStep.VEHICLE_NUMBER.value:
         state_manager.update_context(user.phone_number, {"vehicle_number": text_body})
         state_manager.set_state(user.phone_number, ConversationStep.ASK_DRIVER_AVAILABILITY)
@@ -488,6 +925,7 @@ def handle_support_message(user, text_body: str, state_manager: StateManager) ->
             return "Great. Agar aapko aur madad chahiye toh dobara message karein."
         return "Aap chahte hain ki engineer turant bheja jaaye."
 
+    # Default fallback - show main menu
     logger.debug("Transitioning unknown state %s to MAIN_MENU", current_step)
     greeting_service.route_to_main_menu(user.phone_number)
     return greeting_service.send_welcome(user.name)

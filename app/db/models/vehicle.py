@@ -9,6 +9,7 @@ class Vehicle(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     vehicle_number = Column(String(100), nullable=False)
+    company_name = Column(String(200), nullable=True, default="Tech Solutions Pvt Ltd")
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     supervisor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     driver_id = Column(Integer, ForeignKey("users.id"), nullable=True)

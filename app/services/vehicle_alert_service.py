@@ -49,6 +49,7 @@ class VehicleAlertService:
                 vehicle_info = {
                     "vehicle_id": vehicle.id,
                     "vehicle_number": vehicle.vehicle_number,
+                    "company_name": vehicle.company_name or "Tech Solutions Pvt Ltd",
                     "location": status.location or "Unknown location",
                     "last_gps_time": status.last_gps_time.strftime("%Y-%m-%d %H:%M:%S") if status.last_gps_time else None,
                     "alert_created": alert.created_at.strftime("%Y-%m-%d %H:%M:%S") if alert.created_at else None,
@@ -105,8 +106,7 @@ class VehicleAlertService:
             if vehicle['last_gps_time']:
                 message += f"🕐 Last GPS: {vehicle['last_gps_time']}\n"
             
-            if vehicle['alert_created']:
-                message += f"⏰ Alert Time: {vehicle['alert_created']}\n"
+            # Removed alert time field as requested
             
             # Add contact info
             for contact in vehicle['contacts']:
@@ -117,9 +117,7 @@ class VehicleAlertService:
             
             message += "\n"
 
-        message += "Do you need assistance? Reply with:\n"
-        message += "1️⃣ YES - Engineer assistance chahiye\n"
-        message += "2️⃣ NO - We are handling it\n\n"
+        message += "1️⃣ Press 1 for AI assistance\n\n"
         message += "Support Team"
 
         # Send to all unique manager phones
