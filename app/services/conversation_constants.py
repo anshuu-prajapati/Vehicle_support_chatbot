@@ -55,8 +55,8 @@ MENU_CHOICES = {
         "issue_type": "vehicle_problem",
         "ask_text": (
             # This will be dynamically replaced with company name in menu_service.py
-            "क्या हम {company_name} के मैनेजर से बात कर रहे हैं?\n"
-            "Are we talking to the manager of {company_name}?\n\n"
+            "क्या हम {company_name} के मैनेजर/सुपरवाइजर से बात कर रहे हैं?\n"
+            "Are we talking to the manager/supervisor of {company_name}?\n\n"
             "1️⃣ हाँ / Yes\n"
             "2️⃣ नहीं / No"
         ),
@@ -66,8 +66,8 @@ MENU_CHOICES = {
         "issue_type": "engineer_request",
         "ask_text": (
             # This will be dynamically replaced with company name in menu_service.py
-            "क्या हम {company_name} के मैनेजर से बात कर रहे हैं?\n"
-            "Are we talking to the manager of {company_name}?\n\n"
+            "क्या हम {company_name} के मैनेजर/सुपरवाइजर से बात कर रहे हैं?\n"
+            "Are we talking to the manager/supervisor of {company_name}?\n\n"
             "1️⃣ हाँ / Yes\n"
             "2️⃣ नहीं / No"
         ),

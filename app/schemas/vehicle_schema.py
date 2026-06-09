@@ -24,6 +24,83 @@ class VehicleLocation(BaseModel):
         orm_mode = True
 
 
+class VehicleStatusInfo(BaseModel):
+    """Vehicle status and power information"""
+    ign_state: Optional[str] = None
+    power_state: Optional[str] = None
+    mode: Optional[str] = None
+    last_gps_time: Optional[datetime] = None
+    not_working_hours: int = 0
+
+    class Config:
+        orm_mode = True
+
+
+class VehicleStatusUpdateRequest(BaseModel):
+    """Request to update vehicle status fields"""
+    vehicle_number: str = Field(..., description="Vehicle registration number", example="DL01AB1234")
+    latitude: Optional[float] = Field(None, description="GPS latitude coordinate", example=28.6139)
+    longitude: Optional[float] = Field(None, description="GPS longitude coordinate", example=77.2090)
+    power_state: Optional[str] = Field(None, description="Vehicle power state", example="on")
+    ignition_state: Optional[str] = Field(None, description="Vehicle ignition state", example="on")
+
+    @validator("vehicle_number")
+    def normalize_vehicle_number(cls, v: str) -> str:
+        """Normalize vehicle number to uppercase without spaces"""
+        return v.strip().upper().replace(" ", "")
+
+    @validator("latitude")
+    def validate_latitude(cls, v: Optional[float]) -> Optional[float]:
+        """Validate latitude is within valid range"""
+        if v is not None and not (-90 <= v <= 90):
+            raise ValueError("Latitude must be between -90 and 90")
+        return v
+
+    @validator("longitude")
+    def validate_longitude(cls, v: Optional[float]) -> Optional[float]:
+        """Validate longitude is within valid range"""
+        if v is not None and not (-180 <= v <= 180):
+            raise ValueError("Longitude must be between -180 and 180")
+        return v
+
+    @validator("power_state")
+    def validate_power_state(cls, v: Optional[str]) -> Optional[str]:
+        """Validate power state values"""
+        if v is not None:
+            valid_states = ["on", "off", "unknown"]
+            v_lower = v.lower().strip()
+            if v_lower not in valid_states:
+                raise ValueError(f"Power state must be one of: {', '.join(valid_states)}")
+            return v_lower
+        return v
+
+    @validator("ignition_state")
+    def validate_ignition_state(cls, v: Optional[str]) -> Optional[str]:
+        """Validate ignition state values"""
+        if v is not None:
+            valid_states = ["on", "off", "unknown"]
+            v_lower = v.lower().strip()
+            if v_lower not in valid_states:
+                raise ValueError(f"Ignition state must be one of: {', '.join(valid_states)}")
+            return v_lower
+        return v
+
+    class Config:
+        orm_mode = True
+
+
+class VehicleStatusUpdateResponse(BaseModel):
+    """Response for vehicle status update operation"""
+    success: bool = Field(..., description="Whether operation was successful")
+    message: str = Field(..., description="Operation result message")
+    vehicle_number: str = Field(..., description="Vehicle registration number")
+    updated_fields: Dict[str, Any] = Field(..., description="Fields that were updated")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Update timestamp")
+
+    class Config:
+        orm_mode = True
+
+
 class VehicleDetails(BaseModel):
     """Complete vehicle details response"""
     vehicle_number: str = Field(..., description="Vehicle registration number")

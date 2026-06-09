@@ -148,6 +148,43 @@ def run_schema_migrations():
                 )
                 print("Company names added to existing vehicles")
 
+    # Add latitude, longitude, and power_state columns to vehicle_statuses table if it exists
+    if "vehicle_statuses" in table_names:
+        vehicle_status_columns = [column["name"] for column in inspector.get_columns("vehicle_statuses")]
+        with engine.begin() as connection:
+            if "latitude" not in vehicle_status_columns:
+                print("Adding latitude column to vehicle_statuses table...")
+                connection.execute(
+                    text("ALTER TABLE vehicle_statuses ADD COLUMN latitude FLOAT")
+                )
+                print("Latitude column added to vehicle_statuses")
+            
+            if "longitude" not in vehicle_status_columns:
+                print("Adding longitude column to vehicle_statuses table...")
+                connection.execute(
+                    text("ALTER TABLE vehicle_statuses ADD COLUMN longitude FLOAT")
+                )
+                print("Longitude column added to vehicle_statuses")
+            
+            if "power_state" not in vehicle_status_columns:
+                print("Adding power_state column to vehicle_statuses table...")
+                connection.execute(
+                    text("ALTER TABLE vehicle_statuses ADD COLUMN power_state VARCHAR(20)")
+                )
+                # Update existing records with default power state values
+                connection.execute(
+                    text("""
+                        UPDATE vehicle_statuses 
+                        SET power_state = CASE 
+                            WHEN ign_state = 'on' THEN 'on'
+                            WHEN ign_state = 'off' THEN 'off'
+                            ELSE 'unknown'
+                        END
+                        WHERE power_state IS NULL
+                    """)
+                )
+                print("Power state column added to vehicle_statuses with default values")
+
     if "conversation_states" in table_names:
         conversation_columns = [column["name"] for column in inspector.get_columns("conversation_states")]
         conversation_indexes = inspector.get_indexes("conversation_states")

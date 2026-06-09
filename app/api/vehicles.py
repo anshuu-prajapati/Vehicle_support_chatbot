@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
 from app.services.vehicle_alert_service import VehicleAlertService
+from app.services.vehicle_status_service import VehicleStatusService
 from app.services.state_manager import StateManager
 from app.clients.vehicle_api_client import (
     VehicleAPIClient,
@@ -27,6 +28,8 @@ from app.schemas.vehicle_schema import (
     NotWorkingVehiclesResponse,
     VehicleAPIHealthResponse,
     VehicleAlertResponse,
+    VehicleStatusUpdateRequest,
+    VehicleStatusUpdateResponse,
 )
 
 router = APIRouter(prefix="/vehicles", tags=["Vehicles"])
@@ -461,4 +464,103 @@ async def get_vehicle_location(
         raise HTTPException(
             status_code=500,
             detail="Internal server error",
+        )
+
+
+@router.put("/status/update", response_model=VehicleStatusUpdateResponse)
+async def update_vehicle_status(
+    request: VehicleStatusUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Update vehicle status fields (latitude, longitude, power_state, ignition_state)
+    
+    This endpoint allows updating one or more status fields for a vehicle:
+    - Latitude and longitude coordinates
+    - Power state (on/off/unknown)
+    - Ignition state (on/off/unknown)
+    
+    Args:
+        request: VehicleStatusUpdateRequest with fields to update
+        
+    Returns:
+        VehicleStatusUpdateResponse with update results
+    """
+    try:
+        logger.info(f"Processing vehicle status update for {request.vehicle_number}")
+        
+        # Initialize vehicle status service
+        status_service = VehicleStatusService(db)
+        
+        # Update vehicle status
+        result = status_service.update_vehicle_status(request)
+        
+        if result.success:
+            logger.info(
+                f"Successfully updated vehicle status for {request.vehicle_number}",
+                extra={
+                    "vehicle_number": request.vehicle_number,
+                    "updated_fields": list(result.updated_fields.keys())
+                }
+            )
+        else:
+            logger.warning(
+                f"Failed to update vehicle status for {request.vehicle_number}: {result.message}",
+                extra={"vehicle_number": request.vehicle_number}
+            )
+        
+        return result
+        
+    except Exception as e:
+        logger.exception("Error processing vehicle status update", exc_info=e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update vehicle status: {str(e)}"
+        )
+
+
+@router.get("/status/{vehicle_number}", response_model=dict)
+async def get_vehicle_status_info(
+    vehicle_number: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get current vehicle status information from database
+    
+    Returns detailed status including:
+    - GPS coordinates (latitude, longitude)
+    - Power state and ignition state
+    - Location and timing information
+    
+    Args:
+        vehicle_number: Vehicle registration number
+        
+    Returns:
+        Dictionary with current vehicle status information
+    """
+    try:
+        logger.info(f"Getting vehicle status info for {vehicle_number}")
+        
+        # Initialize vehicle status service
+        status_service = VehicleStatusService(db)
+        
+        # Get vehicle status
+        result = status_service.get_vehicle_status(vehicle_number)
+        
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Vehicle '{vehicle_number}' not found in database"
+            )
+        
+        logger.info(f"Retrieved vehicle status info for {vehicle_number}")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting vehicle status info", exc_info=e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get vehicle status info: {str(e)}"
         )
