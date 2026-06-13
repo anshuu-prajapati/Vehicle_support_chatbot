@@ -473,10 +473,11 @@ async def update_vehicle_status(
     db: Session = Depends(get_db)
 ):
     """
-    Update vehicle status fields (latitude, longitude, power_state, ignition_state)
+    Update vehicle status fields (latitude, longitude, speed, power_state, ignition_state)
     
     This endpoint allows updating one or more status fields for a vehicle:
     - Latitude and longitude coordinates
+    - Speed in km/h
     - Power state (on/off/unknown)
     - Ignition state (on/off/unknown)
     

@@ -14,6 +14,7 @@ class VehicleStatus(Base):
     location = Column(String(255))
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    speed = Column(Float, nullable=True)  # Speed in km/h
     power_state = Column(String(20), nullable=True)
     last_gps_time = Column(DateTime(timezone=True))
     not_working_hours = Column(Integer, default=0, nullable=False)

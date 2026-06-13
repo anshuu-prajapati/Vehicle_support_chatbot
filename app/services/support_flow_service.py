@@ -17,6 +17,128 @@ from app.db.models.user import User
 logger = logging.getLogger("app.support_flow")
 
 
+def _perform_final_gps_verification(user_phone: str, db: Session, state_manager: StateManager) -> bool:
+    """
+    Perform final GPS verification after ground wire troubleshooting.
+    Returns True if GPS coordinates have changed, False otherwise.
+    
+    Args:
+        user_phone: User's phone number
+        db: Database session
+        state_manager: State manager instance for accessing baseline data
+        
+    Returns:
+        True if coordinates changed (GPS working), False if still not working
+    """
+    try:
+        # Get vehicle number and baseline data from context
+        context = state_manager.get_context(user_phone)
+        vehicle_number = context.get("vehicle_number") or _get_vehicle_number_for_user(user_phone, db)
+        
+        if not vehicle_number:
+            logger.warning(f"Cannot perform final GPS verification - no vehicle found for user {user_phone}")
+            return False
+        
+        # Get baseline coordinates from context
+        baseline_lat = context.get("baseline_latitude")
+        baseline_lng = context.get("baseline_longitude")
+        
+        logger.info(
+            f"Starting final GPS verification after ground wire fix for user {user_phone}, vehicle {vehicle_number}",
+            extra={
+                "user_phone": user_phone,
+                "vehicle_number": vehicle_number,
+                "has_baseline": baseline_lat is not None and baseline_lng is not None,
+                "verification_type": "final_after_ground_wire"
+            }
+        )
+        
+        # Wait 5 seconds for GPS system to stabilize after ground wire fix
+        import time
+        time.sleep(5)
+        
+        # Get current vehicle status using the service
+        from app.services.vehicle_status_service import VehicleStatusService
+        status_service = VehicleStatusService(db)
+        vehicle_status = status_service.get_vehicle_status(vehicle_number)
+        
+        if not vehicle_status:
+            logger.warning(f"No status found for vehicle {vehicle_number}")
+            return False
+        
+        # Get current coordinates
+        current_lat = vehicle_status.get("latitude")
+        current_lng = vehicle_status.get("longitude")
+        
+        logger.info(
+            "Final GPS verification comparison data",
+            extra={
+                "user_phone": user_phone,
+                "vehicle_number": vehicle_number,
+                "baseline_coords": f"{baseline_lat}, {baseline_lng}" if baseline_lat and baseline_lng else "None",
+                "current_coords": f"{current_lat}, {current_lng}" if current_lat and current_lng else "None",
+                "verification_type": "final_after_ground_wire"
+            }
+        )
+        
+        # Check if coordinates have changed
+        if baseline_lat is not None and baseline_lng is not None and current_lat is not None and current_lng is not None:
+            coordinates_moved = _coordinates_changed(baseline_lat, baseline_lng, current_lat, current_lng)
+            
+            logger.info(
+                f"Final GPS verification result: coordinates_changed={coordinates_moved}",
+                extra={
+                    "user_phone": user_phone,
+                    "vehicle_number": vehicle_number,
+                    "coordinates_changed": coordinates_moved,
+                    "verification_type": "final_after_ground_wire"
+                }
+            )
+            
+            return coordinates_moved
+        else:
+            logger.warning(
+                f"Missing coordinate data for final GPS verification",
+                extra={
+                    "user_phone": user_phone,
+                    "vehicle_number": vehicle_number,
+                    "baseline_available": baseline_lat is not None and baseline_lng is not None,
+                    "current_available": current_lat is not None and current_lng is not None
+                }
+            )
+            return False
+        
+    except Exception as e:
+        logger.error(
+            f"Error during final GPS verification for user {user_phone}: {str(e)}",
+            extra={"user_phone": user_phone},
+            exc_info=True
+        )
+        return False
+
+
+def _is_vehicle_driving(ignition_state: str, speed: Optional[float]) -> bool:
+    """
+    Determine if vehicle is actively driving based on ignition state and speed.
+    
+    Args:
+        ignition_state: Vehicle ignition state ("on", "off", etc.)
+        speed: Vehicle speed in km/h (can be None if unavailable)
+        
+    Returns:
+        True if vehicle is actively driving (ignition on AND speed > 10), False otherwise
+    """
+    if not ignition_state or ignition_state.lower() != "on":
+        return False
+    
+    if speed is None:
+        # If speed is unavailable, fall back to ignition-only logic (assume driving if ignition on)
+        return True
+    
+    # Vehicle is driving if ignition is on AND speed > 10 km/h
+    return speed > 10.0
+
+
 def _normalize_text(text: str) -> str:
     return text.strip().lower() if text else ""
 
@@ -535,8 +657,8 @@ def _perform_gps_verification(user_phone: str, db: Session, state_manager: State
                         "gps_verification": "timestamp_only_insufficient"
                     }
                 )
-                # Keep conversation alive for recheck since coordinates haven't changed
-                state_manager.set_state(user_phone, ConversationStep.GPS_REPAIR_RECHECK)
+                # Try ground wire troubleshooting since coordinates haven't changed
+                state_manager.set_state(user_phone, ConversationStep.GPS_REPAIR_GROUND_WIRE_FIND)
                 return (
                     f"📍 GPS सिग्नल मिल रहा है लेकिन निर्देशांक नहीं बदले।\n"
                     f"📍 GPS signal is received but coordinates haven't changed.\n\n"
@@ -544,45 +666,37 @@ def _perform_gps_verification(user_phone: str, db: Session, state_manager: State
                     f"📍 Current location: {current_lat:.6f}, {current_lng:.6f}\n\n"
                     "GPS टाइमस्टैम्प अपडेट हो रहा है लेकिन वाहन की स्थिति नहीं बदली है।\n"
                     "GPS timestamp is updating but vehicle position hasn't changed.\n\n"
-                    "कृपया:\n"
-                    "Please:\n\n"
-                    "• वाहन को थोड़ा हिलाएं / Move the vehicle slightly\n"
-                    "• खुली जगह जाएं / Move to an open area\n"
-                    "• 2-3 मिनट इंतजार करें / Wait 2-3 minutes\n\n"
-                    "तैयार होने पर:\n"
-                    "When ready:\n\n"
-                    "1️⃣ दोबारा चेक करें / Check again\n"
-                    "2️⃣ बाद में बात करें / Talk later\n\n"
+                    "आइए एक तकनीकी समाधान आज़माते हैं।\n"
+                    "Let's try a technical solution.\n\n"
+                    "क्या आप वाहन में काला ग्राउंड वायर ढूंढ सकते हैं?\n"
+                    "Can you find the black ground wire in the vehicle?\n\n"
+                    "1️⃣ हाँ, मिल गया / Yes, I found it\n"
+                    "2️⃣ नहीं, नहीं मिला / No, I can't find it\n\n"
                     "धन्यवाद! / Thank you!"
                 )
             else:
                 logger.warning(
-                    f"No GPS changes detected for vehicle {vehicle_number} after repair",
+                    f"No GPS changes detected for vehicle {vehicle_number} after repair - trying ground wire troubleshooting",
                     extra={
                         "user_phone": user_phone,
                         "coordinates_same": True,
                         "timestamp_same": True,
-                        "gps_verification": "no_changes_detected"
+                        "gps_verification": "no_changes_detected_ground_wire_needed"
                     }
                 )
-                # Keep conversation alive for recheck option
-                state_manager.set_state(user_phone, ConversationStep.GPS_REPAIR_RECHECK)
+                # Try ground wire troubleshooting before giving up
+                state_manager.set_state(user_phone, ConversationStep.GPS_REPAIR_GROUND_WIRE_FIND)
             return (
                 f"⚠️ GPS स्थिति में कोई बदलाव नहीं दिखा।\n"
                 f"⚠️ No changes detected in GPS status.\n\n"
-                f"📍 स्थान: {current_lat:.6f}, {current_lng:.6f}\n"
-                f"📍 Location: {current_lat:.6f}, {current_lng:.6f}\n\n"
-                "निर्देशांक और टाइमस्टैम्प दोनों अपडेट नहीं हुए हैं।\n"
-                "Both coordinates and timestamp haven't updated.\n\n"
-                "कृपया:\n"
-                "Please:\n\n"
-                "• 2-3 मिनट और इंतजार करें / Wait 2-3 more minutes\n"
-                "• खुली जगह जाएं / Move to an open area\n"
-                "• वाहन को थोड़ा हिलाएं / Move the vehicle slightly\n\n"
-                "तैयार होने पर:\n"
-                "When ready:\n\n"
-                "1️⃣ दोबारा चेक करें / Check again\n"
-                "2️⃣ बाद में बात करें / Talk later\n\n"
+                f"📍 वर्तमान स्थान: {current_lat:.6f}, {current_lng:.6f}\n"
+                f"📍 Current location: {current_lat:.6f}, {current_lng:.6f}\n\n"
+                "आइए एक और तकनीकी समाधान आज़माते हैं।\n"
+                "Let's try one more technical solution.\n\n"
+                "क्या आप वाहन में काला ग्राउंड वायर ढूंढ सकते हैं?\n"
+                "Can you find the black ground wire in the vehicle?\n\n"
+                "1️⃣ हाँ, मिल गया / Yes, I found it\n"
+                "2️⃣ नहीं, नहीं मिला / No, I can't find it\n\n"
                 "धन्यवाद! / Thank you!"
             )
         
@@ -1130,121 +1244,214 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
             
             state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CHECK_IGNITION)
             logger.info(
-                "Driver is near vehicle - baseline captured, will check ignition status automatically",
+                "Driver is near vehicle - baseline captured, will auto-check ignition after message",
                 extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_CHECK_IGNITION.value},
             )
             
+            # Schedule automatic ignition check after sending the initial message
             try:
-                # Send initial waiting message
-                initial_message = (
-                    "बहुत अच्छा! अब हमें आपके वाहन की इग्निशन स्थिति की जांच करनी होगी।\n"
-                    "Great! Now we need to check your vehicle's ignition status.\n\n"
-                    "कृपया 2-3 सेकंड प्रतीक्षा करें जबकि हम जांच करते हैं।\n"
-                    "Please wait 2-3 seconds while we check."
-                )
-                send_whatsapp_message(user.phone_number, initial_message)
-                
-                # Automatically check ignition after 3 seconds
-                import time
                 import threading
-                def check_ignition_automatically():
-                    time.sleep(3)
-                    
-                    try:
-                        from app.services.vehicle_status_service import VehicleStatusService
-                        status_service = VehicleStatusService(db)
-                        vehicle_status = status_service.get_vehicle_status(vehicle_number)
-                        
-                        if not vehicle_status:
-                            logger.warning(f"No vehicle status available for automatic ignition check - {vehicle_number}")
-                            fallback_message = (
-                                "वाहन की स्थिति की जांच नहीं हो सकी। चलिए सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
-                                "Could not check vehicle status. Let's proceed with normal process.\n\n"
-                                "पहले वाहन का कट आउट बंद करें।\n"
-                                "First turn off the vehicle cut out.\n\n"
-                                "कट आउट बंद करने के बाद '1' दबाएं।\n"
-                                "Press '1' after turning off the cut out.\n\n"
-                                "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
-                                "2️⃣ कट आउट नहीं मिला / Cut out not found"
-                            )
-                            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
-                            send_whatsapp_message(user.phone_number, fallback_message)
-                            return
-                        
-                        current_ignition = vehicle_status.get("ignition_state", "").lower()
-                        logger.info(
-                            f"Automatic ignition status check for vehicle {vehicle_number}: {current_ignition}",
-                            extra={"phone_number": user.phone_number, "vehicle_number": vehicle_number, "ignition_state": current_ignition}
-                        )
-                        
-                        if current_ignition == "on":
-                            # Ignition is on - ask if driver is driving
-                            state_manager.update_context(user.phone_number, {"ignition_was_on": True})
-                            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
-                            ignition_on_message = (
-                                "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
-                                "We can see that your vehicle ignition is on.\n\n"
-                                "क्या आप अभी गाड़ी चला रहे हैं?\n"
-                                "Are you currently driving?\n\n"
-                                "अगर हां, तो क्या आप कुछ मिनटों के लिए वाहन को सुरक्षित जगह पार्क कर सकते हैं? GPS की मरम्मत के लिए इग्निशन बंद करना होगा।\n"
-                                "If yes, can you park the vehicle safely for a few minutes? We need to turn off ignition for GPS repair.\n\n"
-                                "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
-                                "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
-                            )
-                            send_whatsapp_message(user.phone_number, ignition_on_message)
-                        else:
-                            # Ignition is off - continue with cut out step
-                            state_manager.update_context(user.phone_number, {"ignition_was_on": False})
-                            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
-                            ignition_off_message = (
-                                "बढ़िया! आपके वाहन की इग्निशन बंद है। अब हम GPS की मरम्मत शुरू कर सकते हैं।\n"
-                                "Great! Your vehicle ignition is off. Now we can start GPS repair.\n\n"
-                                "पहले वाहन का कट आउट बंद करें।\n"
-                                "First turn off the vehicle cut out.\n\n"
-                                "कट आउट बंद करने के बाद '1' दबाएं।\n"
-                                "Press '1' after turning off the cut out.\n\n"
-                                "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
-                                "2️⃣ कट आउट नहीं मिला / Cut out not found"
-                            )
-                            send_whatsapp_message(user.phone_number, ignition_off_message)
-                            
-                    except Exception as e:
-                        logger.error(f"Error in automatic ignition check: {str(e)}", exc_info=True)
-                        # Fallback to manual flow
-                        fallback_message = (
-                            "इग्निशन स्थिति की जांच में समस्या हुई। चलिए सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
-                            "There was an issue checking ignition status. Let's proceed with normal process.\n\n"
-                            "पहले वाहन का कट आउट बंद करें।\n"
-                            "First turn off the vehicle cut out.\n\n"
-                            "कट आउट बंद करने के बाद '1' दबाएं।\n"
-                            "Press '1' after turning off the cut out.\n\n"
-                            "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
-                            "2️⃣ कट आउट नहीं मिला / Cut out not found"
-                        )
-                        state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
-                        send_whatsapp_message(user.phone_number, fallback_message)
+                import time
                 
-                # Start automatic ignition check in background
-                thread = threading.Thread(target=check_ignition_automatically)
+                def auto_trigger_ignition_check():
+                    time.sleep(3)  # Wait 3 seconds
+                    try:
+                        # Create a new database session for the background task
+                        from app.db.database import SessionLocal
+                        from app.services.whatsapp_service import send_whatsapp_message
+                        
+                        # Get a new database session
+                        new_db = SessionLocal()
+                        
+                        try:
+                            # Re-create state manager with new session
+                            from app.services.state_manager import StateManager
+                            new_state_manager = StateManager(new_db)
+                            
+                            # Check if user is still in GPS_REPAIR_CHECK_IGNITION state
+                            current_state = new_state_manager.get_state(user.phone_number)
+                            if not current_state or current_state.current_step != ConversationStep.GPS_REPAIR_CHECK_IGNITION.value:
+                                logger.info(f"User {user.phone_number} no longer in ignition check state, skipping auto-check")
+                                return
+                            
+                            # Get vehicle status and check ignition
+                            vehicle_number = _get_vehicle_number_for_user(user.phone_number, new_db)
+                            if not vehicle_number:
+                                # Fallback message
+                                fallback_msg = (
+                                    "वाहन की स्थिति प्राप्त नहीं हो सकी। चलिए सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
+                                    "Could not get vehicle status. Let's proceed with normal process.\n\n"
+                                    "पहले वाहन का कट आउट बंद करें।\n"
+                                    "First turn off the vehicle cut out.\n\n"
+                                    "कट आउट बंद करने के बाद '1' दबाएं।\n"
+                                    "Press '1' after turning off the cut out.\n\n"
+                                    "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
+                                    "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                                )
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                send_whatsapp_message(user.phone_number, fallback_msg)
+                                return
+                            
+                            from app.services.vehicle_status_service import VehicleStatusService
+                            status_service = VehicleStatusService(new_db)
+                            vehicle_status = status_service.get_vehicle_status(vehicle_number)
+                            
+                            if not vehicle_status:
+                                # Fallback message
+                                fallback_msg = (
+                                    "वाहन की स्थिति की जांच नहीं हो सकी। चलिए सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
+                                    "Could not check vehicle status. Let's proceed with normal process.\n\n"
+                                    "पहले वाहन का कट आउट बंद करें।\n"
+                                    "First turn off the vehicle cut out.\n\n"
+                                    "कट आउट बंद करने के बाद '1' दबाएं।\n"
+                                    "Press '1' after turning off the cut out.\n\n"
+                                    "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
+                                    "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                                )
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                send_whatsapp_message(user.phone_number, fallback_msg)
+                                return
+                            
+                            current_ignition = vehicle_status.get("ignition_state", "").lower()
+                            current_speed = vehicle_status.get("speed")
+                            is_driving = _is_vehicle_driving(current_ignition, current_speed)
+                            
+                            logger.info(
+                                f"Auto driving check for vehicle {vehicle_number}: ignition={current_ignition}, speed={current_speed}, driving={is_driving}",
+                                extra={
+                                    "phone_number": user.phone_number, 
+                                    "vehicle_number": vehicle_number, 
+                                    "ignition_state": current_ignition,
+                                    "speed": current_speed,
+                                    "is_driving": is_driving
+                                }
+                            )
+                            
+                            if is_driving:
+                                # Vehicle is actively driving (ignition on + speed > 10) - ask driver to park
+                                new_state_manager.update_context(user.phone_number, {"ignition_was_on": True, "vehicle_is_driving": True})
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                
+                                if current_speed is not None:
+                                    driving_msg = (
+                                        f"हमने देखा कि आपका वाहन चल रहा है (गति: {current_speed:.1f} km/h)।\n"
+                                        f"We can see that your vehicle is moving (speed: {current_speed:.1f} km/h).\n\n"
+                                        "कृपया वाहन को सुरक्षित जगह पार्क करें। GPS की मरम्मत के लिए वाहन रुका होना चाहिए।\n"
+                                        "Please park the vehicle safely. The vehicle needs to be stopped for GPS repair.\n\n"
+                                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                                        "2️⃣ वाहन पहले से रुका है / Vehicle is already stopped"
+                                    )
+                                else:
+                                    driving_msg = (
+                                        "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
+                                        "We can see that your vehicle ignition is on.\n\n"
+                                        "स्पीड डेटा उपलब्ध नहीं है, लेकिन इग्निशन चालू होने से लगता है कि आप ड्राइविंग कर रहे हैं।\n"
+                                        "Speed data is not available, but since ignition is on, it appears you might be driving.\n\n"
+                                        "कृपया वाहन को सुरक्षित जगह पार्क करें। GPS की मरम्मत के लिए वाहन रुका होना चाहिए।\n"
+                                        "Please park the vehicle safely. The vehicle needs to be stopped for GPS repair.\n\n"
+                                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                                        "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
+                                    )
+                                send_whatsapp_message(user.phone_number, driving_msg)
+                            elif current_ignition == "on":
+                                # Ignition is on but speed <= 10 (parked/idling) - proceed with cut out step
+                                new_state_manager.update_context(user.phone_number, {"ignition_was_on": True, "vehicle_is_driving": False})
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                
+                                if current_speed is not None:
+                                    parked_msg = (
+                                        f"बढ़िया! आपका वाहन रुका हुआ है (गति: {current_speed:.1f} km/h) लेकिन इग्निशन चालू है।\n"
+                                        f"Great! Your vehicle is stopped (speed: {current_speed:.1f} km/h) but ignition is on.\n\n"
+                                        "GPS की मरम्मत के लिए पहले इग्निशन बंद करें, फिर कट आउट बंद करें।\n"
+                                        "For GPS repair, first turn off ignition, then turn off cut out.\n\n"
+                                        "दोनों बंद करने के बाद '1' दबाएं।\n"
+                                        "Press '1' after turning off both.\n\n"
+                                        "1️⃣ इग्निशन और कट आउट दोनों बंद कर दिया / Both ignition and cut out turned off\n"
+                                        "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                                    )
+                                else:
+                                    parked_msg = (
+                                        "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
+                                        "We can see that your vehicle ignition is on.\n\n"
+                                        "स्पीड डेटा उपलब्ध नहीं है, लेकिन GPS की मरम्मत के लिए वाहन रुका होना चाहिए।\n"
+                                        "Speed data is not available, but the vehicle needs to be stopped for GPS repair.\n\n"
+                                        "कृपया पहले वाहन को पार्क करें, फिर इग्निशन और कट आउट बंद करें।\n"
+                                        "Please first park the vehicle, then turn off ignition and cut out.\n\n"
+                                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                                        "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
+                                    )
+                                send_whatsapp_message(user.phone_number, parked_msg)
+                            else:
+                                # Ignition is off - continue with cut out step
+                                new_state_manager.update_context(user.phone_number, {"ignition_was_on": False, "vehicle_is_driving": False})
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                ignition_off_msg = (
+                                    "बढ़िया! आपके वाहन की इग्निशन बंद है। अब हम GPS की मरम्मत शुरू कर सकते हैं।\n"
+                                    "Great! Your vehicle ignition is off. Now we can start GPS repair.\n\n"
+                                    "पहले वाहन का कट आउट बंद करें।\n"
+                                    "First turn off the vehicle cut out.\n\n"
+                                    "कट आउट बंद करने के बाद '1' दबाएं।\n"
+                                    "Press '1' after turning off the cut out.\n\n"
+                                    "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
+                                    "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                                )
+                                send_whatsapp_message(user.phone_number, ignition_off_msg)
+                                
+                        finally:
+                            # Close the database session
+                            try:
+                                new_db.close()
+                            except:
+                                pass
+                                
+                    except Exception as e:
+                        logger.error(f"Error in auto ignition check: {str(e)}", exc_info=True)
+                        try:
+                            # Send fallback message on error
+                            fallback_msg = (
+                                "इग्निशन स्थिति की जांच में समस्या हुई। चलिए सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
+                                "There was an issue checking ignition status. Let's proceed with normal process.\n\n"
+                                "पहले वाहन का कट आउट बंद करें।\n"
+                                "First turn off the vehicle cut out.\n\n"
+                                "कट आउट बंद करने के बाद '1' दबाएं।\n"
+                                "Press '1' after turning off the cut out.\n\n"
+                                "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
+                                "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                            )
+                            # Use fresh database session for fallback
+                            from app.db.database import SessionLocal
+                            from app.services.state_manager import StateManager
+                            fallback_db = SessionLocal()
+                            try:
+                                fallback_state_manager = StateManager(fallback_db)
+                                fallback_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                                send_whatsapp_message(user.phone_number, fallback_msg)
+                            finally:
+                                try:
+                                    fallback_db.close()
+                                except:
+                                    pass
+                        except Exception as e2:
+                            logger.error(f"Error sending fallback message: {str(e2)}")
+                
+                # Start the auto-trigger thread
+                thread = threading.Thread(target=auto_trigger_ignition_check)
                 thread.daemon = True
                 thread.start()
                 
-                return initial_message
+                logger.info(f"Auto ignition check scheduled for user {user.phone_number}")
                 
             except Exception as e:
-                logger.error(f"Failed to start automatic ignition check: {str(e)}")
-                # Fallback to manual flow
-                state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
-                return (
-                    "इग्निशन जांच शुरू नहीं हो सकी। सामान्य प्रक्रिया से आगे बढ़ते हैं।\n"
-                    "Could not start ignition check. Proceeding with normal process.\n\n"
-                    "पहले वाहन का कट आउट बंद करें।\n"
-                    "First turn off the vehicle cut out.\n\n"
-                    "कट आउट बंद करने के बाद '1' दबाएं।\n"
-                    "Press '1' after turning off the cut out.\n\n"
-                    "1️⃣ कट आउट बंद कर दिया / Cut out turned off\n"
-                    "2️⃣ कट आउट नहीं मिला / Cut out not found"
-                )
+                logger.error(f"Failed to schedule auto ignition check: {str(e)}")
+                # If scheduling fails, fallback to manual check
+                pass
+            
+            return (
+                "बहुत अच्छा! अब हमें आपके वाहन की इग्निशन स्थिति की जांच करनी होगी।\n"
+                "Great! Now we need to check your vehicle's ignition status.\n\n"
+                "कृपया 2-3 सेकंड प्रतीक्षा करें जबकि हम जांच करते हैं।\n"
+                "Please wait 2-3 seconds while we check."
+            )
 
         if _is_negative(normalized) or normalized in ["2", "nahi", "no", "nahin"]:
             state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_TIME_ESTIMATE)
@@ -1532,9 +1739,7 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
         )
 
     # GPS Repair Flow - Check ignition status and handle driving scenario
-    # NOTE: This handler is disabled because we now use automatic ignition checking
-    # via threading in GPS_REPAIR_NEAR_VEHICLE handler to prevent duplicate messages
-    if False and current_step == ConversationStep.GPS_REPAIR_CHECK_IGNITION.value:
+    if current_step == ConversationStep.GPS_REPAIR_CHECK_IGNITION.value:
         # Get vehicle status to check ignition
         vehicle_number = _get_vehicle_number_for_user(user.phone_number, db)
         if not vehicle_number:
@@ -1573,32 +1778,83 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
                 )
             
             current_ignition = vehicle_status.get("ignition_state", "").lower()
+            current_speed = vehicle_status.get("speed")
+            is_driving = _is_vehicle_driving(current_ignition, current_speed)
+            
             logger.info(
-                f"Ignition status check for vehicle {vehicle_number}: {current_ignition}",
-                extra={"phone_number": user.phone_number, "vehicle_number": vehicle_number, "ignition_state": current_ignition}
+                f"Driving status check for vehicle {vehicle_number}: ignition={current_ignition}, speed={current_speed}, driving={is_driving}",
+                extra={
+                    "phone_number": user.phone_number, 
+                    "vehicle_number": vehicle_number, 
+                    "ignition_state": current_ignition,
+                    "speed": current_speed,
+                    "is_driving": is_driving
+                }
             )
             
-            if current_ignition == "on":
-                # Ignition is on - ask if driver is driving and can park
-                state_manager.update_context(user.phone_number, {"ignition_was_on": True})
+            if is_driving:
+                # Vehicle is actively driving (ignition on + speed > 10) - ask driver to park
+                state_manager.update_context(user.phone_number, {"ignition_was_on": True, "vehicle_is_driving": True})
                 state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
                 logger.info(
-                    "Ignition is ON - asking driver if they are driving and can park",
-                    extra={"phone_number": user.phone_number, "ignition_state": current_ignition}
+                    "Vehicle is actively driving - asking driver to park safely",
+                    extra={"phone_number": user.phone_number, "ignition_state": current_ignition, "speed": current_speed}
                 )
-                return (
-                    "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
-                    "We can see that your vehicle ignition is on.\n\n"
-                    "क्या आप अभी गाड़ी चला रहे हैं?\n"
-                    "Are you currently driving?\n\n"
-                    "अगर हां, तो क्या आप कुछ मिनटों के लिए वाहन को सुरक्षित जगह पार्क कर सकते हैं? GPS की मरम्मत के लिए इग्निशन बंद करना होगा।\n"
-                    "If yes, can you park the vehicle safely for a few minutes? We need to turn off ignition for GPS repair.\n\n"
-                    "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
-                    "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
+                
+                if current_speed is not None:
+                    return (
+                        f"हमने देखा कि आपका वाहन चल रहा है (गति: {current_speed:.1f} km/h)।\n"
+                        f"We can see that your vehicle is moving (speed: {current_speed:.1f} km/h).\n\n"
+                        "कृपया वाहन को सुरक्षित जगह पार्क करें। GPS की मरम्मत के लिए वाहन रुका होना चाहिए।\n"
+                        "Please park the vehicle safely. The vehicle needs to be stopped for GPS repair.\n\n"
+                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                        "2️⃣ वाहन पहले से रुका है / Vehicle is already stopped"
+                    )
+                else:
+                    return (
+                        "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
+                        "We can see that your vehicle ignition is on.\n\n"
+                        "स्पीड डेटा उपलब्ध नहीं है, लेकिन इग्निशन चालू होने से लगता है कि आप ड्राइविंग कर रहे हैं।\n"
+                        "Speed data is not available, but since ignition is on, it appears you might be driving.\n\n"
+                        "कृपया वाहन को सुरक्षित जगह पार्क करें। GPS की मरम्मत के लिए वाहन रुका होना चाहिए।\n"
+                        "Please park the vehicle safely. The vehicle needs to be stopped for GPS repair.\n\n"
+                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                        "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
+                    )
+            elif current_ignition == "on":
+                # Ignition is on but speed <= 10 (parked/idling) - proceed with cut out step
+                state_manager.update_context(user.phone_number, {"ignition_was_on": True, "vehicle_is_driving": False})
+                state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
+                logger.info(
+                    "Ignition is ON but vehicle is parked/idling - proceeding with GPS repair",
+                    extra={"phone_number": user.phone_number, "ignition_state": current_ignition, "speed": current_speed}
                 )
+                
+                if current_speed is not None:
+                    return (
+                        f"बढ़िया! आपका वाहन रुका हुआ है (गति: {current_speed:.1f} km/h) लेकिन इग्निशन चालू है।\n"
+                        f"Great! Your vehicle is stopped (speed: {current_speed:.1f} km/h) but ignition is on.\n\n"
+                        "GPS की मरम्मत के लिए पहले इग्निशन बंद करें, फिर कट आउट बंद करें।\n"
+                        "For GPS repair, first turn off ignition, then turn off cut out.\n\n"
+                        "दोनों बंद करने के बाद '1' दबाएं।\n"
+                        "Press '1' after turning off both.\n\n"
+                        "1️⃣ इग्निशन और कट आउट दोनों बंद कर दिया / Both ignition and cut out turned off\n"
+                        "2️⃣ कट आउट नहीं मिला / Cut out not found"
+                    )
+                else:
+                    return (
+                        "हमने देखा कि आपके वाहन की इग्निशन चालू है।\n"
+                        "We can see that your vehicle ignition is on.\n\n"
+                        "स्पीड डेटा उपलब्ध नहीं है, लेकिन GPS की मरम्मत के लिए वाहन पूरी तरह रुका होना चाहिए।\n"
+                        "Speed data is not available, but the vehicle needs to be completely stopped for GPS repair.\n\n"
+                        "कृपया पहले वाहन को सुरक्षित जगह पार्क करें, फिर इग्निशन और कट आउट बंद करें।\n"
+                        "Please first park the vehicle safely, then turn off ignition and cut out.\n\n"
+                        "1️⃣ मैं वाहन पार्क कर दूंगा / I'll park the vehicle\n"
+                        "2️⃣ मैं ड्राइविंग नहीं कर रहा / I'm not driving"
+                    )
             else:
                 # Ignition is off - continue with normal flow
-                state_manager.update_context(user.phone_number, {"ignition_was_on": False})
+                state_manager.update_context(user.phone_number, {"ignition_was_on": False, "vehicle_is_driving": False})
                 state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_CUT_OUT)
                 logger.info(
                     "Ignition is OFF - proceeding with normal GPS repair flow",
@@ -1677,9 +1933,68 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
         
         # Handle completion responses after parking instructions were given (or normal flow)
         if normalized in ["1", "done", "cut out off", "ok", "बंद"]:
+            # Verify vehicle is actually stopped if parking instructions were given
+            if parking_instructions_given:
+                vehicle_number = _get_vehicle_number_for_user(user.phone_number, db)
+                if vehicle_number:
+                    try:
+                        from app.services.vehicle_status_service import VehicleStatusService
+                        status_service = VehicleStatusService(db)
+                        vehicle_status = status_service.get_vehicle_status(vehicle_number)
+                        
+                        if vehicle_status:
+                            current_ignition = vehicle_status.get("ignition_state", "").lower()
+                            current_speed = vehicle_status.get("speed")
+                            is_still_driving = _is_vehicle_driving(current_ignition, current_speed)
+                            
+                            logger.info(
+                                f"Parking verification for vehicle {vehicle_number}: ignition={current_ignition}, speed={current_speed}, still_driving={is_still_driving}",
+                                extra={
+                                    "phone_number": user.phone_number,
+                                    "vehicle_number": vehicle_number,
+                                    "ignition_state": current_ignition,
+                                    "speed": current_speed,
+                                    "is_still_driving": is_still_driving,
+                                    "verification_context": "parking_completion"
+                                }
+                            )
+                            
+                            if is_still_driving:
+                                # Vehicle is still moving - ask driver to park properly
+                                if current_speed is not None:
+                                    return (
+                                        f"⚠️ हम देख सकते हैं कि आपका वाहन अभी भी चल रहा है (गति: {current_speed:.1f} km/h)।\n"
+                                        f"⚠️ We can see that your vehicle is still moving (speed: {current_speed:.1f} km/h).\n\n"
+                                        "कृपया वाहन को पूरी तरह रोकें और सुरक्षित जगह पार्क करें।\n"
+                                        "Please completely stop the vehicle and park it safely.\n\n"
+                                        "वाहन रुक जाने के बाद दोबारा '1' दबाएं।\n"
+                                        "Press '1' again after the vehicle has stopped.\n\n"
+                                        "1️⃣ अब वाहन पार्क हो गया है / Vehicle is now parked\n"
+                                        "2️⃣ मुझे समस्या हो रही है / I'm having trouble"
+                                    )
+                                else:
+                                    return (
+                                        "⚠️ हम देख सकते हैं कि आपके वाहन की इग्निशन अभी भी चालू है।\n"
+                                        "⚠️ We can see that your vehicle ignition is still on.\n\n"
+                                        "कृपया वाहन को पूरी तरह रोकें, इग्निशन बंद करें, और कट आउट बंद करें।\n"
+                                        "Please completely stop the vehicle, turn off ignition, and turn off cut out.\n\n"
+                                        "सब कुछ बंद करने के बाद दोबारा '1' दबाएं।\n"
+                                        "Press '1' again after turning everything off.\n\n"
+                                        "1️⃣ सब कुछ बंद कर दिया है / Everything is turned off\n"
+                                        "2️⃣ मुझे समस्या हो रही है / I'm having trouble"
+                                    )
+                    except Exception as e:
+                        logger.error(f"Error verifying parking status: {str(e)}", exc_info=True)
+                        # Continue with normal flow if verification fails
+                        pass
+            
+            # Vehicle is properly stopped (or no verification needed) - proceed with ignition step
             state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_IGNITION)
-            # Clear the parking instruction flag as we're moving to next step
-            state_manager.update_context(user.phone_number, {"parking_instructions_given": False})
+            # Clear the parking instruction flag and trouble count as we're moving to next step
+            state_manager.update_context(user.phone_number, {
+                "parking_instructions_given": False, 
+                "parking_trouble_count": 0
+            })
             logger.info(
                 "Cut out turned off successfully - asking to turn on ignition",
                 extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_IGNITION.value, "after_parking": parking_instructions_given},
@@ -1695,8 +2010,11 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
         if normalized in ["2", "not found", "नहीं मिला"]:
             # If cut out not found, proceed to ignition directly
             state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_IGNITION)
-            # Clear the parking instruction flag as we're moving to next step
-            state_manager.update_context(user.phone_number, {"parking_instructions_given": False})
+            # Clear the parking instruction flag and trouble count as we're moving to next step
+            state_manager.update_context(user.phone_number, {
+                "parking_instructions_given": False,
+                "parking_trouble_count": 0
+            })
             logger.info(
                 "Cut out not found - proceeding directly to ignition",
                 extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_IGNITION.value},
@@ -1710,6 +2028,42 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
                 "Press '1' after turning on the ignition.\n\n"
                 "1️⃣ इग्निशन ऑन कर दिया / Ignition turned on"
             )
+        
+        # Handle trouble with parking/stopping
+        if parking_instructions_given and normalized in ["2", "trouble", "समस्या", "help", "मदद"]:
+            trouble_count = context.get("parking_trouble_count", 0) + 1
+            state_manager.update_context(user.phone_number, {"parking_trouble_count": trouble_count})
+            
+            logger.info(
+                "Driver having trouble parking - providing assistance",
+                extra={"phone_number": user.phone_number, "trouble_context": "parking_difficulty", "trouble_count": trouble_count}
+            )
+            
+            if trouble_count >= 2:
+                # Multiple trouble attempts - escalate to manual assistance  
+                state_manager.clear_state(user.phone_number)
+                return (
+                    "समझ गया। ऐसा लगता है कि वाहन पार्क करने में कुछ तकनीकी समस्या है।\n"
+                    "I understand. It seems there might be a technical issue with parking the vehicle.\n\n"
+                    "कृपया अपने मैनेजर या सुपरवाइजर से संपर्क करें।\n"
+                    "Please contact your manager or supervisor.\n\n"
+                    "हम बाद में GPS की समस्या को ठीक करने की कोशिश करेंगे।\n"
+                    "We will try to fix the GPS issue later.\n\n"
+                    "धन्यवाद! / Thank you!"
+                )
+            else:
+                return (
+                    "कोई बात नहीं। आइए धीरे-धीरे करते हैं।\n"
+                    "No problem. Let's do it step by step.\n\n"
+                    "पहले वाहन को बिल्कुल धीरे-धीरे चलाकर एक सुरक्षित जगह पहुंचाएं।\n"
+                    "First, drive the vehicle very slowly to a safe place.\n\n"
+                    "फिर वाहन को पूरी तरह रोकें और हैंडब्रेक लगाएं।\n"
+                    "Then completely stop the vehicle and apply the handbrake.\n\n"
+                    "तैयार होने पर '1' दबाएं।\n"
+                    "Press '1' when ready.\n\n"
+                    "1️⃣ वाहन सुरक्षित रूप से पार्क हो गया / Vehicle safely parked\n"
+                    "2️⃣ अभी भी समस्या है / Still having trouble"
+                )
 
         logger.warning(
             "Invalid cut out response - expecting confirmation",
@@ -2015,6 +2369,374 @@ def handle_support_message(user, text_body: str, state_manager: StateManager, db
             "2️⃣ बाद में बात करें / Talk later\n\n"
             "आपके GPS की स्थिति जांचने के लिए तैयार हैं।\n"
             "Ready to check your GPS status."
+        )
+
+    # GPS Repair Flow - Ground Wire Troubleshooting - Step 1: Find black ground wire
+    if current_step == ConversationStep.GPS_REPAIR_GROUND_WIRE_FIND.value:
+        if normalized in ["1", "yes", "haan", "हाँ", "found", "मिल गया"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_GROUND_WIRE_TOUCH)
+            logger.info(
+                "Driver found black ground wire - asking to touch vehicle body",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_GROUND_WIRE_TOUCH.value}
+            )
+            return (
+                "बहुत बढ़िया! अब कृपया काले ग्राउंड वायर को वाहन की बॉडी से टच करें।\n"
+                "Excellent! Now please touch the black ground wire with the vehicle body.\n\n"
+                "ध्यान रखें:\n"
+                "Please note:\n\n"
+                "• वायर को वाहन की मेटल बॉडी से अच्छी तरह टच करें\n"
+                "• Touch the wire properly with the vehicle's metal body\n\n"
+                "• 2-3 सेकंड तक टच करके रखें\n"
+                "• Keep it touched for 2-3 seconds\n\n"
+                "टच कर देने के बाद '1' दबाएं।\n"
+                "Press '1' after touching.\n\n"
+                "1️⃣ ग्राउंड वायर टच कर दिया / Touched the ground wire"
+            )
+
+        if normalized in ["2", "no", "nahi", "नहीं", "not found", "नहीं मिला"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH)
+            logger.info(
+                "Driver could not find black ground wire - dispatching engineer",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH.value}
+            )
+            return (
+                "कोई बात नहीं। काला ग्राउंड वायर ढूंढना कभी-कभी मुश्किल हो सकता है।\n"
+                "No problem. Finding the black ground wire can sometimes be difficult.\n\n"
+                "हमारा तकनीकी इंजीनियर GPS की समस्या को ठीक करने के लिए आएगा।\n"
+                "Our technical engineer will come to fix the GPS issue.\n\n"
+                "इंजीनियर 24-48 घंटों में आपसे संपर्क करेगा।\n"
+                "The engineer will contact you within 24-48 hours.\n\n"
+                "धन्यवाद! / Thank you!"
+            )
+
+        # Invalid response
+        logger.warning(
+            "Invalid ground wire find response",
+            extra={"phone_number": user.phone_number, "text": text_body}
+        )
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "क्या आप वाहन में काला ग्राउंड वायर ढूंढ सकते हैं?\n"
+            "Can you find the black ground wire in the vehicle?\n\n"
+            "1️⃣ हाँ, मिल गया / Yes, I found it\n"
+            "2️⃣ नहीं, नहीं मिला / No, I can't find it"
+        )
+
+    # GPS Repair Flow - Ground Wire Troubleshooting - Step 2: Touch wire to vehicle body
+    if current_step == ConversationStep.GPS_REPAIR_GROUND_WIRE_TOUCH.value:
+        if normalized in ["1", "done", "touched", "टच कर दिया", "हो गया"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_GROUND_WIRE_VERIFY)
+            logger.info(
+                "Driver touched ground wire to vehicle body - asking for confirmation",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_GROUND_WIRE_VERIFY.value}
+            )
+            return (
+                "बहुत अच्छा! आपने ग्राउंड वायर को वाहन की बॉडी से टच किया है।\n"
+                "Very good! You have touched the ground wire with the vehicle body.\n\n"
+                "कृपया पुष्टि करें:\n"
+                "Please confirm:\n\n"
+                "क्या आपने काले ग्राउंड वायर को वाहन की मेटल बॉडी से अच्छी तरह टच किया है?\n"
+                "Have you properly touched the black ground wire with the vehicle's metal body?\n\n"
+                "1️⃣ हाँ, अच्छी तरह टच किया / Yes, touched properly\n"
+                "2️⃣ नहीं, फिर से कोशिश करूंगा / No, I'll try again"
+            )
+
+        # Invalid response
+        logger.warning(
+            "Invalid ground wire touch response",
+            extra={"phone_number": user.phone_number, "text": text_body}
+        )
+        return (
+            "कृपया ग्राउंड वायर को वाहन की बॉडी से टच करने के बाद '1' दबाएं।\n"
+            "Please press '1' after touching the ground wire with the vehicle body.\n\n"
+            "1️⃣ ग्राउंड वायर टच कर दिया / Touched the ground wire"
+        )
+
+    # GPS Repair Flow - Ground Wire Troubleshooting - Step 3: Verify touch and proceed to final check
+    if current_step == ConversationStep.GPS_REPAIR_GROUND_WIRE_VERIFY.value:
+        if normalized in ["1", "yes", "haan", "हाँ", "properly", "अच्छी तरह"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_FINAL_CHECK)
+            logger.info(
+                "Ground wire touch confirmed - proceeding to final GPS check",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_FINAL_CHECK.value}
+            )
+            
+            # Schedule automatic final GPS verification after sending the initial message
+            try:
+                import threading
+                import time
+                
+                def auto_trigger_final_gps_check():
+                    time.sleep(5)  # Wait 5 seconds for GPS to stabilize after ground wire fix
+                    try:
+                        # Create a new database session for the background task
+                        from app.db.database import SessionLocal
+                        from app.services.whatsapp_service import send_whatsapp_message
+                        
+                        # Get a new database session
+                        new_db = SessionLocal()
+                        
+                        try:
+                            # Re-create state manager with new session
+                            from app.services.state_manager import StateManager
+                            new_state_manager = StateManager(new_db)
+                            
+                            # Check if user is still in GPS_REPAIR_FINAL_CHECK state
+                            current_state = new_state_manager.get_state(user.phone_number)
+                            if not current_state or current_state.current_step != ConversationStep.GPS_REPAIR_FINAL_CHECK.value:
+                                logger.info(f"User {user.phone_number} no longer in final check state, skipping auto-check")
+                                return
+                            
+                            # Perform final GPS verification
+                            coordinates_changed = _perform_final_gps_verification(user.phone_number, new_db, new_state_manager)
+                            
+                            if coordinates_changed:
+                                # GPS is now working - success!
+                                context = new_state_manager.get_context(user.phone_number)
+                                baseline_lat = context.get("baseline_latitude")
+                                baseline_lng = context.get("baseline_longitude")
+                                vehicle_number = context.get("vehicle_number") or _get_vehicle_number_for_user(user.phone_number, new_db)
+                                
+                                # Get current coordinates for success message
+                                from app.services.vehicle_status_service import VehicleStatusService
+                                status_service = VehicleStatusService(new_db)
+                                vehicle_status = status_service.get_vehicle_status(vehicle_number)
+                                current_lat = vehicle_status.get("latitude") if vehicle_status else None
+                                current_lng = vehicle_status.get("longitude") if vehicle_status else None
+                                
+                                # Clear state - conversation ends successfully
+                                new_state_manager.clear_state(user.phone_number)
+                                
+                                if baseline_lat and baseline_lng and current_lat and current_lng:
+                                    success_msg = (
+                                        f"🎉 बहुत बढ़िया! ग्राउंड वायर के बाद GPS सफलतापूर्वक काम कर रहा है।\n"
+                                        f"🎉 Excellent! GPS is working successfully after ground wire fix.\n\n"
+                                        f"📍 पुराना स्थान: {baseline_lat:.6f}, {baseline_lng:.6f}\n"
+                                        f"📍 Old location: {baseline_lat:.6f}, {baseline_lng:.6f}\n\n"
+                                        f"📍 नया स्थान: {current_lat:.6f}, {current_lng:.6f}\n"
+                                        f"📍 New location: {current_lat:.6f}, {current_lng:.6f}\n\n"
+                                        "ग्राउंड वायर की तकनीक से GPS सिस्टम ठीक हो गया है! ✅\n"
+                                        "The GPS system is fixed with the ground wire technique! ✅\n\n"
+                                        "धन्यवाद! / Thank you!"
+                                    )
+                                else:
+                                    success_msg = (
+                                        f"🎉 परफेक्ट! ग्राउंड वायर के बाद GPS सफलतापूर्वक अपडेट हो रहा है।\n"
+                                        f"🎉 Perfect! GPS is successfully updating after ground wire fix.\n\n"
+                                        "निर्देशांक बदलने से पता चलता है कि GPS सिस्टम अब बिल्कुल सही तरीके से काम कर रहा है! ✅\n"
+                                        "The coordinate change confirms that the GPS system is now working perfectly! ✅\n\n"
+                                        "धन्यवाद! / Thank you!"
+                                    )
+                                send_whatsapp_message(user.phone_number, success_msg)
+                            else:
+                                # GPS still not working - dispatch engineer
+                                new_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH)
+                                failure_msg = (
+                                    "⚠️ ग्राउंड वायर की कोशिश के बावजूद GPS अभी भी अपडेट नहीं हो रहा।\n"
+                                    "⚠️ Despite trying the ground wire, GPS is still not updating.\n\n"
+                                    "यह एक गंभीर हार्डवेयर समस्या लग रही है।\n"
+                                    "This appears to be a serious hardware issue.\n\n"
+                                    "हमारा तकनीकी इंजीनियर GPS की समस्या को ठीक करने के लिए आएगा।\n"
+                                    "Our technical engineer will come to fix the GPS issue.\n\n"
+                                    "इंजीनियर 24-48 घंटों में आपसे संपर्क करेगा।\n"
+                                    "The engineer will contact you within 24-48 hours.\n\n"
+                                    "धन्यवाद! / Thank you!"
+                                )
+                                send_whatsapp_message(user.phone_number, failure_msg)
+                                
+                        finally:
+                            # Close the database session
+                            try:
+                                new_db.close()
+                            except:
+                                pass
+                                
+                    except Exception as e:
+                        logger.error(f"Error in auto final GPS check: {str(e)}", exc_info=True)
+                        try:
+                            # Send fallback message on error
+                            fallback_msg = (
+                                "⚠️ अंतिम GPS जांच में त्रुटि हुई।\n"
+                                "⚠️ Error occurred during final GPS check.\n\n"
+                                "हमारा तकनीकी इंजीनियर इस समस्या को हल करेगा।\n"
+                                "Our technical engineer will solve this issue.\n\n"
+                                "इंजीनियर 24-48 घंटों में आपसे संपर्क करेगा।\n"
+                                "The engineer will contact you within 24-48 hours.\n\n"
+                                "धन्यवाद! / Thank you!"
+                            )
+                            # Use fresh database session for fallback
+                            from app.db.database import SessionLocal
+                            from app.services.state_manager import StateManager
+                            fallback_db = SessionLocal()
+                            try:
+                                fallback_state_manager = StateManager(fallback_db)
+                                fallback_state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH)
+                                send_whatsapp_message(user.phone_number, fallback_msg)
+                            finally:
+                                try:
+                                    fallback_db.close()
+                                except:
+                                    pass
+                        except Exception as e2:
+                            logger.error(f"Error sending final check fallback message: {str(e2)}")
+                
+                # Start the auto-trigger thread
+                thread = threading.Thread(target=auto_trigger_final_gps_check)
+                thread.daemon = True
+                thread.start()
+                
+                logger.info(f"Auto final GPS check scheduled for user {user.phone_number}")
+                
+            except Exception as e:
+                logger.error(f"Failed to schedule auto final GPS check: {str(e)}")
+                # If scheduling fails, proceed with manual verification
+                pass
+            
+            return (
+                "परफेक्ट! अब GPS की अंतिम जांच करते हैं।\n"
+                "Perfect! Now let's do the final GPS check.\n\n"
+                "🔍 GPS निर्देशांक की जांच हो रही है... कृपया प्रतीक्षा करें।\n"
+                "🔍 Checking GPS coordinates... Please wait.\n\n"
+                "यह प्रक्रिया कुछ सेकंड लेगी।\n"
+                "This process will take a few seconds."
+            )
+
+        if normalized in ["2", "no", "nahi", "नहीं", "try again", "फिर से"]:
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_GROUND_WIRE_TOUCH)
+            logger.info(
+                "Driver will try touching ground wire again",
+                extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_GROUND_WIRE_TOUCH.value}
+            )
+            return (
+                "ठीक है, कोई बात नहीं। फिर से कोशिश करें।\n"
+                "Okay, no problem. Please try again.\n\n"
+                "कृपया काले ग्राउंड वायर को वाहन की मेटल बॉडी से अच्छी तरह टच करें।\n"
+                "Please touch the black ground wire properly with the vehicle's metal body.\n\n"
+                "2-3 सेकंड तक टच करके रखें।\n"
+                "Keep it touched for 2-3 seconds.\n\n"
+                "टच कर देने के बाद '1' दबाएं।\n"
+                "Press '1' after touching.\n\n"
+                "1️⃣ ग्राउंड वायर टच कर दिया / Touched the ground wire"
+            )
+
+        # Invalid response
+        logger.warning(
+            "Invalid ground wire verify response",
+            extra={"phone_number": user.phone_number, "text": text_body}
+        )
+        return (
+            "कृपया वैध विकल्प चुनें।\n"
+            "Please select a valid option.\n\n"
+            "क्या आपने काले ग्राउंड वायर को वाहन की मेटल बॉडी से अच्छी तरह टच किया है?\n"
+            "Have you properly touched the black ground wire with the vehicle's metal body?\n\n"
+            "1️⃣ हाँ, अच्छी तरह टच किया / Yes, touched properly\n"
+            "2️⃣ नहीं, फिर से कोशिश करूंगा / No, I'll try again"
+        )
+
+    # GPS Repair Flow - Final GPS Check after ground wire troubleshooting
+    if current_step == ConversationStep.GPS_REPAIR_FINAL_CHECK.value:
+        # Automatically perform final GPS verification after ground wire fix
+        try:
+            coordinates_changed = _perform_final_gps_verification(user.phone_number, db, state_manager)
+            
+            if coordinates_changed:
+                # GPS is now working - success!
+                context = state_manager.get_context(user.phone_number)
+                baseline_lat = context.get("baseline_latitude")
+                baseline_lng = context.get("baseline_longitude")
+                vehicle_number = context.get("vehicle_number") or _get_vehicle_number_for_user(user.phone_number, db)
+                
+                # Get current coordinates for success message
+                from app.services.vehicle_status_service import VehicleStatusService
+                status_service = VehicleStatusService(db)
+                vehicle_status = status_service.get_vehicle_status(vehicle_number)
+                current_lat = vehicle_status.get("latitude") if vehicle_status else None
+                current_lng = vehicle_status.get("longitude") if vehicle_status else None
+                
+                # Clear state - conversation ends successfully
+                state_manager.clear_state(user.phone_number)
+                
+                logger.info(
+                    f"GPS coordinates changed after ground wire fix - repair successful",
+                    extra={
+                        "user_phone": user.phone_number,
+                        "vehicle_number": vehicle_number,
+                        "baseline": f"{baseline_lat:.6f}, {baseline_lng:.6f}" if baseline_lat and baseline_lng else "Unknown",
+                        "current": f"{current_lat:.6f}, {current_lng:.6f}" if current_lat and current_lng else "Unknown",
+                        "gps_verification": "ground_wire_fix_success"
+                    }
+                )
+                
+                if baseline_lat and baseline_lng and current_lat and current_lng:
+                    return (
+                        f"🎉 बहुत बढ़िया! ग्राउंड वायर के बाद GPS सफलतापूर्वक काम कर रहा है।\n"
+                        f"🎉 Excellent! GPS is working successfully after ground wire fix.\n\n"
+                        f"📍 पुराना स्थान: {baseline_lat:.6f}, {baseline_lng:.6f}\n"
+                        f"📍 Old location: {baseline_lat:.6f}, {baseline_lng:.6f}\n\n"
+                        f"📍 नया स्थान: {current_lat:.6f}, {current_lng:.6f}\n"
+                        f"📍 New location: {current_lat:.6f}, {current_lng:.6f}\n\n"
+                        "ग्राउंड वायर की तकनीक से GPS सिस्टम ठीक हो गया है! ✅\n"
+                        "The GPS system is fixed with the ground wire technique! ✅\n\n"
+                        "धन्यवाद! / Thank you!"
+                    )
+                else:
+                    return (
+                        f"🎉 परफेक्ट! ग्राउंड वायर के बाद GPS सफलतापूर्वक अपडेट हो रहा है।\n"
+                        f"🎉 Perfect! GPS is successfully updating after ground wire fix.\n\n"
+                        "निर्देशांक बदलने से पता चलता है कि GPS सिस्टम अब बिल्कुल सही तरीके से काम कर रहा है! ✅\n"
+                        "The coordinate change confirms that the GPS system is now working perfectly! ✅\n\n"
+                        "धन्यवाद! / Thank you!"
+                    )
+            else:
+                # GPS still not working after ground wire - dispatch engineer
+                state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH)
+                logger.info(
+                    "GPS still not working after ground wire fix - dispatching engineer",
+                    extra={"phone_number": user.phone_number, "new_state": ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH.value}
+                )
+                return (
+                    "⚠️ ग्राउंड वायर की कोशिश के बावजूद GPS अभी भी अपडेट नहीं हो रहा।\n"
+                    "⚠️ Despite trying the ground wire, GPS is still not updating.\n\n"
+                    "यह एक गंभीर हार्डवेयर समस्या लग रही है।\n"
+                    "This appears to be a serious hardware issue.\n\n"
+                    "हमारा तकनीकी इंजीनियर GPS की समस्या को ठीक करने के लिए आएगा।\n"
+                    "Our technical engineer will come to fix the GPS issue.\n\n"
+                    "इंजीनियर 24-48 घंटों में आपसे संपर्क करेगा।\n"
+                    "The engineer will contact you within 24-48 hours.\n\n"
+                    "धन्यवाद! / Thank you!"
+                )
+        except Exception as e:
+            logger.error(
+                f"Error during final GPS verification: {str(e)}",
+                extra={"phone_number": user.phone_number},
+                exc_info=True
+            )
+            state_manager.set_state(user.phone_number, ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH)
+            return (
+                "⚠️ अंतिम GPS जांच में त्रुटि हुई।\n"
+                "⚠️ Error occurred during final GPS check.\n\n"
+                "हमारा तकनीकी इंजीनियर इस समस्या को हल करेगा।\n"
+                "Our technical engineer will solve this issue.\n\n"
+                "इंजीनियर 24-48 घंटों में आपसे संपर्क करेगा।\n"
+                "The engineer will contact you within 24-48 hours.\n\n"
+                "धन्यवाद! / Thank you!"
+            )
+
+    # GPS Repair Flow - Engineer Dispatch (final state)
+    if current_step == ConversationStep.GPS_REPAIR_ENGINEER_DISPATCH.value:
+        # This is a terminal state - clear conversation
+        state_manager.clear_state(user.phone_number)
+        logger.info(
+            "GPS repair conversation ended - engineer dispatched",
+            extra={"phone_number": user.phone_number}
+        )
+        return (
+            "आपका GPS रिपेयर रिक्वेस्ट रजिस्टर हो गया है।\n"
+            "Your GPS repair request has been registered.\n\n"
+            "हमारा तकनीकी इंजीनियर जल्द ही आपसे संपर्क करेगा।\n"
+            "Our technical engineer will contact you soon.\n\n"
+            "धन्यवाद! / Thank you!"
         )
 
     # Continue with existing diagnostic flow states

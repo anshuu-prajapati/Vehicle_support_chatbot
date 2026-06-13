@@ -41,6 +41,7 @@ class VehicleStatusUpdateRequest(BaseModel):
     vehicle_number: str = Field(..., description="Vehicle registration number", example="DL01AB1234")
     latitude: Optional[float] = Field(None, description="GPS latitude coordinate", example=28.6139)
     longitude: Optional[float] = Field(None, description="GPS longitude coordinate", example=77.2090)
+    speed: Optional[float] = Field(None, description="Vehicle speed in km/h", example=45.5)
     power_state: Optional[str] = Field(None, description="Vehicle power state", example="on")
     ignition_state: Optional[str] = Field(None, description="Vehicle ignition state", example="on")
 
@@ -61,6 +62,13 @@ class VehicleStatusUpdateRequest(BaseModel):
         """Validate longitude is within valid range"""
         if v is not None and not (-180 <= v <= 180):
             raise ValueError("Longitude must be between -180 and 180")
+        return v
+
+    @validator("speed")
+    def validate_speed(cls, v: Optional[float]) -> Optional[float]:
+        """Validate speed is non-negative"""
+        if v is not None and v < 0:
+            raise ValueError("Speed must be non-negative")
         return v
 
     @validator("power_state")

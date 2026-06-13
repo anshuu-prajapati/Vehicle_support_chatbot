@@ -77,6 +77,16 @@ class VehicleStatusService:
                 }
                 logger.info(f"Updated longitude for {request.vehicle_number}: {old_value} → {request.longitude}")
             
+            # Update speed if provided
+            if request.speed is not None:
+                old_value = vehicle_status.speed
+                vehicle_status.speed = request.speed
+                updated_fields["speed"] = {
+                    "old_value": old_value,
+                    "new_value": request.speed
+                }
+                logger.info(f"Updated speed for {request.vehicle_number}: {old_value} → {request.speed}")
+            
             # Update power_state if provided
             if request.power_state is not None:
                 old_value = vehicle_status.power_state
@@ -193,6 +203,7 @@ class VehicleStatusService:
                 "company_name": vehicle.company_name,
                 "latitude": status.latitude if status else None,
                 "longitude": status.longitude if status else None,
+                "speed": status.speed if status else None,
                 "power_state": status.power_state if status else None,
                 "ignition_state": status.ign_state if status else None,
                 "mode": status.mode if status else None,

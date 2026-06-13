@@ -19,13 +19,13 @@ class VehicleAlertService:
 
     def get_broken_vehicles_with_contacts(self) -> List[Dict[str, Any]]:
         """
-        Get all broken/not-working vehicles with their contact information
+        Get all vehicles with GPS issues and their contact information
         
         Returns:
-            List of broken vehicles with contact details
+            List of vehicles with GPS issues and contact details
         """
         try:
-            # Query for vehicles that are not working
+            # Query for vehicles with GPS issues (not working mode)
             broken_vehicles = (
                 self.db.query(Vehicle, VehicleStatus, Alert, User)
                 .join(VehicleStatus, Vehicle.id == VehicleStatus.vehicle_id)
@@ -78,10 +78,10 @@ class VehicleAlertService:
 
     def send_alert_to_managers(self, vehicles_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Send WhatsApp alerts to managers about broken vehicles
+        Send WhatsApp alerts to managers about vehicles with GPS issues
         
         Args:
-            vehicles_data: List of broken vehicles data
+            vehicles_data: List of vehicles with GPS issues data
             
         Returns:
             Dict with send results
@@ -89,15 +89,17 @@ class VehicleAlertService:
         if not vehicles_data:
             return {
                 "success": True,
-                "message": "No broken vehicles found",
+                "message": "No vehicles with GPS issues found",
                 "alerts_sent": 0,
                 "failed_sends": []
             }
 
         # Create alert message
         vehicle_count = len(vehicles_data)
-        message = f"🚨 *VEHICLE ALERT* 🚨\n\n"
-        message += f"Aapke fleet mein *{vehicle_count}* vehicle(s) breakdown/not working hai:\n\n"
+        message = f"🚨 *GPS ALERT* 🚨\n"
+        message += f"🚨 *GPS अलर्ट* 🚨\n\n"
+        message += f"Aapke fleet mein *{vehicle_count}* vehicle(s) ka GPS काम नहीं कर रहा:\n"
+        message += f"*{vehicle_count}* vehicle(s) in your fleet have GPS issues:\n\n"
 
         for i, vehicle in enumerate(vehicles_data, 1):
             message += f"*{i}. Vehicle {vehicle['vehicle_number']}*\n"
@@ -117,7 +119,10 @@ class VehicleAlertService:
             
             message += "\n"
 
-        message += "1️⃣ Press 1 for AI assistance\n\n"
+        message += "हम आपके GPS की समस्या ठीक करने में मदद करेंगे।\n"
+        message += "We are here to help fix your GPS issues.\n\n"
+        message += "1️⃣ Press 1 for AI assistance\n"
+        message += "1️⃣ AI सहायता के लिए 1 दबाएं\n\n"
         message += "Support Team"
 
         # Send to all unique manager phones
@@ -148,7 +153,7 @@ class VehicleAlertService:
 
         return {
             "success": sent_count > 0,
-            "message": f"Alert sent to {sent_count} manager(s) about {vehicle_count} broken vehicle(s)",
+            "message": f"GPS alert sent to {sent_count} manager(s) about {vehicle_count} vehicle(s) with GPS issues",
             "vehicles_count": vehicle_count,
             "alerts_sent": sent_count,
             "failed_sends": failed_sends,
