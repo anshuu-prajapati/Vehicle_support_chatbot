@@ -155,10 +155,11 @@ def _route_to_flow_handler(
     
     elif issue_type == "ACCIDENT":
         state_manager.set_state(user_phone, ConversationStep.ACCIDENT_WORKSHOP_CONFIRMATION)
+        state_manager.update_context(user_phone, {"accident_sub_step": "ACCIDENT_EXPECTED_DATE"})
         return (
-            "Kya vehicle accident ke baad workshop mein hai?\n\n"
-            "1️⃣ Yes\n"
-            "2️⃣ No"
+            "Dhanyavaad. 🙏\n\n"
+            "Kripya vehicle ke dobara chalu hone ya workshop se bahar aane ki expected date batayein.\n\n"
+            "📅 Expected Date: (Example: 20-06-2026)"
         )
     
     elif issue_type == "BATTERY_DISCONNECT":
