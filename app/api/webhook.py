@@ -178,8 +178,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         user = get_or_create_user(sender, db=db)
         state_manager = StateManager(db)
         
-        # Process message with existing state (no reset unless specifically called by breakdown alert API)
-        answer = handle_support_message(user, text_body, state_manager, db)
+        # Route message to appropriate flow handler (old GPS repair or new service engineer)
+        from app.services.flow_router import route_message
+        answer = route_message(user, text_body, state_manager, db)
         
         # Send response and save chat
         send_whatsapp_message(user.phone_number, answer)

@@ -21,24 +21,27 @@ class VehicleAlertService:
         """
         Get all vehicles with GPS issues and their contact information
         
+        Finds broken vehicles on-the-fly by checking vehicle_statuses table.
+        No alerts table required - just parse data when API is called.
+        
         Returns:
             List of vehicles with GPS issues and contact details
         """
         try:
             # Query for vehicles with GPS issues (not working mode)
+            # Simplified query - no alerts table required!
             broken_vehicles = (
-                self.db.query(Vehicle, VehicleStatus, Alert, User)
+                self.db.query(Vehicle, VehicleStatus, User)
                 .join(VehicleStatus, Vehicle.id == VehicleStatus.vehicle_id)
-                .join(Alert, Vehicle.id == Alert.vehicle_id)
                 .outerjoin(User, Vehicle.manager_id == User.id)
                 .filter(VehicleStatus.mode == "not working")
-                .filter(Alert.status == "OPEN")
-                .filter(Alert.alert_type == "VEHICLE_OFF_NOT_WORKING")
                 .all()
             )
 
+            logger.info(f"Found {len(broken_vehicles)} broken vehicles with mode='not working'")
+
             vehicles_data = []
-            for vehicle, status, alert, manager in broken_vehicles:
+            for vehicle, status, manager in broken_vehicles:
                 # Get vehicle contacts
                 contacts = (
                     self.db.query(VehicleContact)
@@ -52,7 +55,9 @@ class VehicleAlertService:
                     "company_name": vehicle.company_name or "Tech Solutions Pvt Ltd",
                     "location": status.location or "Unknown location",
                     "last_gps_time": status.last_gps_time.strftime("%Y-%m-%d %H:%M:%S") if status.last_gps_time else None,
-                    "alert_created": alert.created_at.strftime("%Y-%m-%d %H:%M:%S") if alert.created_at else None,
+                    "not_working_hours": status.not_working_hours if hasattr(status, 'not_working_hours') else None,
+                    "ign_state": status.ign_state,
+                    "power_state": status.power_state,
                     "manager_name": manager.name if manager else "No manager assigned",
                     "manager_phone": manager.phone_number if manager else None,
                     "contacts": []
@@ -70,6 +75,7 @@ class VehicleAlertService:
 
                 vehicles_data.append(vehicle_info)
 
+            logger.info(f"Prepared {len(vehicles_data)} vehicles data for alerts")
             return vehicles_data
 
         except Exception as e:
@@ -94,54 +100,75 @@ class VehicleAlertService:
                 "failed_sends": []
             }
 
-        # Create alert message
+        # Create alert message - NEW FORMAT
         vehicle_count = len(vehicles_data)
-        message = f"🚨 *GPS ALERT* 🚨\n"
-        message += f"🚨 *GPS अलर्ट* 🚨\n\n"
-        message += f"Aapke fleet mein *{vehicle_count}* vehicle(s) ka GPS काम नहीं कर रहा:\n"
-        message += f"*{vehicle_count}* vehicle(s) in your fleet have GPS issues:\n\n"
-
-        for i, vehicle in enumerate(vehicles_data, 1):
-            message += f"*{i}. Vehicle {vehicle['vehicle_number']}*\n"
-            message += f"📍 Location: {vehicle['location']}\n"
-            
-            if vehicle['last_gps_time']:
-                message += f"🕐 Last GPS: {vehicle['last_gps_time']}\n"
-            
-            # Removed alert time field as requested
-            
-            # Add contact info
-            for contact in vehicle['contacts']:
-                if contact['type'] == 'OWNER' and contact['owner_phone']:
-                    message += f"👤 Owner: {contact['owner_phone']}\n"
-                if contact['type'] == 'DRIVER' and contact['driver_phone']:
-                    message += f"🚛 Driver: {contact['driver_phone']}\n"
-            
-            message += "\n"
-
-        message += "हम आपके GPS की समस्या ठीक करने में मदद करेंगे।\n"
-        message += "We are here to help fix your GPS issues.\n\n"
-        message += "1️⃣ Press 1 for AI assistance\n"
-        message += "1️⃣ AI सहायता के लिए 1 दबाएं\n\n"
-        message += "Support Team"
-
-        # Send to all unique manager phones
-        manager_phones = set()
+        
+        # Build message for each vehicle
+        messages_to_send = {}
+        
         for vehicle in vehicles_data:
-            if vehicle['manager_phone']:
-                manager_phones.add(vehicle['manager_phone'])
-            # Also add owner phones as managers
+            vehicle_number = vehicle['vehicle_number']
+            location = vehicle['location'] or "Unknown"
+            last_gps = vehicle['last_gps_time'] or "Unknown"
+            
+            # Create personalized message for this vehicle
+            msg = f"Namaste Sir,\n\n"
+            msg += f"Vehicle *{vehicle_number}* se GPS data receive nahi ho raha hai.\n\n"
+            msg += f"📍 Last Known Location: {location}\n"
+            msg += f"🕐 Last Update: {last_gps}\n\n"
+            msg += "Kripya issue ka reason select karein:\n\n"
+            msg += "1️⃣ Workshop / Service Center\n"
+            msg += "2️⃣ Accident\n"
+            msg += "3️⃣ Battery Disconnect\n"
+            msg += "4️⃣ GPS Removed\n"
+            msg += "5️⃣ GPS Damaged\n"
+            msg += "6️⃣ Vehicle Running but GPS Not Updating\n"
+            msg += "7️⃣ Vehicle Standing\n"
+            msg += "8️⃣ Other\n\n"
+            msg += "Reply with the option number."
+            
+            # Store message with vehicle context
             for contact in vehicle['contacts']:
                 if contact['owner_phone']:
-                    manager_phones.add(contact['owner_phone'])
+                    if contact['owner_phone'] not in messages_to_send:
+                        messages_to_send[contact['owner_phone']] = {
+                            'message': msg,
+                            'vehicle_number': vehicle_number,
+                            'location': location,
+                            'last_gps': last_gps
+                        }
+            
+            # Also send to manager
+            if vehicle['manager_phone']:
+                if vehicle['manager_phone'] not in messages_to_send:
+                    messages_to_send[vehicle['manager_phone']] = {
+                        'message': msg,
+                        'vehicle_number': vehicle_number,
+                        'location': location,
+                        'last_gps': last_gps
+                    }
+        
+        # For backward compatibility, create a summary message variable
+        message = f"Namaste Sir,\n\nVehicle GPS data receive nahi ho raha hai.\n\n"
+        message += "Kripya issue ka reason select karein:\n"
+        message += "1️⃣ Workshop / Service Center\n"
+        message += "2️⃣ Accident\n"
+        message += "3️⃣ Battery Disconnect\n"
+        message += "4️⃣ GPS Removed\n"
+        message += "5️⃣ GPS Damaged\n"
+        message += "6️⃣ Vehicle Running but GPS Not Updating\n"
+        message += "7️⃣ Vehicle Standing\n"
+        message += "8️⃣ Other\n\n"
+        message += "Reply with the option number."
 
+        # Send personalized messages to each contact
         sent_count = 0
         failed_sends = []
 
-        for phone in manager_phones:
+        for phone, msg_data in messages_to_send.items():
             try:
-                logger.info(f"Sending vehicle alert to {phone}")
-                send_whatsapp_message(phone, message)
+                logger.info(f"Sending vehicle alert to {phone} for vehicle {msg_data['vehicle_number']}")
+                send_whatsapp_message(phone, msg_data['message'])
                 sent_count += 1
                 logger.info(f"Successfully sent alert to {phone}")
             except Exception as e:

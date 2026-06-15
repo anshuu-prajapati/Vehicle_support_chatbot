@@ -1,4 +1,5 @@
 import uuid
+import json
 from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
@@ -41,6 +42,39 @@ class GUID(TypeDecorator):
             return value
 
 
+# Custom JSON type that works with both PostgreSQL and SQLite
+class JSONType(TypeDecorator):
+    """Platform-independent JSON type.
+    Uses PostgreSQL's JSONB type, otherwise uses TEXT with JSON serialization.
+    """
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(JSONB())
+        else:
+            return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == 'postgresql':
+            return value
+        else:
+            # For SQLite, serialize dict to JSON string
+            return json.dumps(value) if isinstance(value, dict) else value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return {}
+        if dialect.name == 'postgresql':
+            return value
+        else:
+            # For SQLite, deserialize JSON string to dict
+            return json.loads(value) if isinstance(value, str) else value
+
+
 class ConversationState(Base):
     __tablename__ = "conversation_states"
     __table_args__ = (
@@ -58,11 +92,11 @@ class ConversationState(Base):
     phone_number = Column(String(20), nullable=False, index=True)
     current_step = Column(String(100), nullable=False)
     
-    # Use TEXT for SQLite compatibility instead of JSONB
+    # Use JSONType for cross-database compatibility
     context_json = Column(
-        Text if os.getenv("DATABASE_URL", "").startswith("sqlite") else JSONB,
+        JSONType,
         nullable=False,
-        default="{}"
+        default={}
     )
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

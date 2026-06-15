@@ -51,6 +51,62 @@ class ConversationStep(str, Enum):
     OWNER_CONFIRMATION = "OWNER_CONFIRMATION"
     DRIVER_HANDOFF = "DRIVER_HANDOFF"
     ENGINEER_REQUEST = "ENGINEER_REQUEST"
+    
+    # NEW: Service Engineer Assignment Flow States
+    INITIAL_CUSTOMER_MESSAGE = "INITIAL_CUSTOMER_MESSAGE"
+    INTENT_CLASSIFICATION = "INTENT_CLASSIFICATION"
+    
+    # Workshop Flow
+    WORKSHOP_CONFIRMATION = "WORKSHOP_CONFIRMATION"
+    
+    # Accident Flow
+    ACCIDENT_WORKSHOP_CONFIRMATION = "ACCIDENT_WORKSHOP_CONFIRMATION"
+    
+    # Battery Disconnect Flow
+    BATTERY_MAINTENANCE_CONFIRMATION = "BATTERY_MAINTENANCE_CONFIRMATION"
+    BATTERY_GPS_REINSTALL_CONFIRMATION = "BATTERY_GPS_REINSTALL_CONFIRMATION"
+    BATTERY_GPS_DATA_CHECK = "BATTERY_GPS_DATA_CHECK"
+    
+    # GPS Removed Flow (Q5-Q9)
+    GPS_REMOVED_REINSTALL_DATE = "GPS_REMOVED_REINSTALL_DATE"      # Q5
+    GPS_REMOVED_LOCATION = "GPS_REMOVED_LOCATION"                  # Q6
+    GPS_REMOVED_CONTACT = "GPS_REMOVED_CONTACT"                    # Q7
+    GPS_REMOVED_AVAILABILITY = "GPS_REMOVED_AVAILABILITY"          # Q8
+    GPS_REMOVED_AVAILABLE_DATE = "GPS_REMOVED_AVAILABLE_DATE"      # Q9
+    
+    # GPS Damaged Flow (Q10-Q12)
+    GPS_DAMAGED_LOCATION = "GPS_DAMAGED_LOCATION"                  # Q10
+    GPS_DAMAGED_CONTACT = "GPS_DAMAGED_CONTACT"                    # Q11
+    GPS_DAMAGED_INSPECTION_DATE = "GPS_DAMAGED_INSPECTION_DATE"    # Q12
+    
+    # Vehicle Running Flow (Q13-Q16)
+    VEHICLE_RUNNING_DRIVER_NAME = "VEHICLE_RUNNING_DRIVER_NAME"           # Q13
+    VEHICLE_RUNNING_DRIVER_MOBILE = "VEHICLE_RUNNING_DRIVER_MOBILE"       # Q14
+    VEHICLE_RUNNING_LOCATION = "VEHICLE_RUNNING_LOCATION"                 # Q15
+    VEHICLE_RUNNING_INSPECTION_DATE = "VEHICLE_RUNNING_INSPECTION_DATE"   # Q16
+    
+    # Vehicle Standing Flow (Q17-Q19)
+    VEHICLE_STANDING_DURATION = "VEHICLE_STANDING_DURATION"               # Q17
+    VEHICLE_STANDING_LOCATION = "VEHICLE_STANDING_LOCATION"               # Q18
+    VEHICLE_STANDING_INSPECTION_DATE = "VEHICLE_STANDING_INSPECTION_DATE" # Q19
+    
+    # Unknown/Other Flow (Q20)
+    OTHER_ISSUE_DESCRIPTION = "OTHER_ISSUE_DESCRIPTION"  # Q20
+    
+    # Smart Data Collection
+    DATA_COLLECTION_VEHICLE_NUMBER = "DATA_COLLECTION_VEHICLE_NUMBER"
+    DATA_COLLECTION_OWNER_NAME = "DATA_COLLECTION_OWNER_NAME"
+    DATA_COLLECTION_OWNER_MOBILE = "DATA_COLLECTION_OWNER_MOBILE"
+    DATA_COLLECTION_DRIVER_NAME = "DATA_COLLECTION_DRIVER_NAME"
+    DATA_COLLECTION_DRIVER_MOBILE = "DATA_COLLECTION_DRIVER_MOBILE"
+    DATA_COLLECTION_LOCATION = "DATA_COLLECTION_LOCATION"
+    DATA_COLLECTION_VEHICLE_AVAILABLE = "DATA_COLLECTION_VEHICLE_AVAILABLE"
+    DATA_COLLECTION_VISIT_DATE = "DATA_COLLECTION_VISIT_DATE"
+    DATA_COLLECTION_VISIT_TIME = "DATA_COLLECTION_VISIT_TIME"
+    DATA_COLLECTION_ISSUE_TYPE = "DATA_COLLECTION_ISSUE_TYPE"
+    
+    # Engineer Assignment
+    ENGINEER_ASSIGNMENT = "ENGINEER_ASSIGNMENT"
 
 
 DEFAULT_STATE_CONTEXT = {
@@ -63,6 +119,25 @@ DEFAULT_STATE_CONTEXT = {
     "location": "",
     "ticket_id": "",
     "contact_type": "",
+    # Service Engineer Assignment Fields
+    "last_location": "",
+    "last_activity_time": "",
+    "inactive_duration_hours": 0,
+    "issue_classification": "",
+    "customer_response": "",
+    "owner_mobile": "",
+    "driver_mobile": "",
+    "visit_date": "",
+    "visit_time": "",
+    "reinstallation_date": "",
+    "reinstallation_time": "",
+    "vehicle_available": None,
+    "vehicle_available_date": "",
+    "vehicle_available_time": "",
+    "inspection_date": "",
+    "inspection_time": "",
+    "standing_duration": "",
+    "service_request_id": "",
 }
 
 
