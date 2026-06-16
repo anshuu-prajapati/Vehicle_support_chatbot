@@ -88,7 +88,7 @@ def handle_workshop_flow(
         
         # Handle reselection after NO
         if workshop_sub_step == WORKSHOP_RESELECT:
-            # User selected one of 7 options
+            # Try numeric selection first
             option_map = {
                 "1": "ACCIDENT",
                 "2": "BATTERY_DISCONNECT",
@@ -100,17 +100,29 @@ def handle_workshop_flow(
             }
             
             new_issue_type = option_map.get(normalized)
+            
+            # If not a valid number, try intent classification
             if not new_issue_type:
-                return (
-                    "⚠️ Kripya 1-7 ke beech ek option select karein.\n\n"
-                    "1️⃣ Accident\n"
-                    "2️⃣ Battery Disconnect\n"
-                    "3️⃣ GPS Removed\n"
-                    "4️⃣ GPS Damaged\n"
-                    "5️⃣ Vehicle Running but GPS Not Updating\n"
-                    "6️⃣ Vehicle Standing\n"
-                    "7️⃣ Other"
-                )
+                # Import intent classification
+                from app.services.intent_classification_service import classify_customer_intent
+                
+                # Classify the text response
+                new_issue_type, method = classify_customer_intent(text_body)
+                
+                logger.info(f"Workshop reselection: Classified '{text_body}' as {new_issue_type} using {method}")
+                
+                # If classification returns UNKNOWN and text doesn't look like an attempt, show error
+                if new_issue_type == "UNKNOWN" and len(text_body.strip()) < 3:
+                    return (
+                        "⚠️ Kripya 1-7 ke beech ek option select karein.\n\n"
+                        "1️⃣ Accident\n"
+                        "2️⃣ Battery Disconnect\n"
+                        "3️⃣ GPS Removed\n"
+                        "4️⃣ GPS Damaged\n"
+                        "5️⃣ Vehicle Running but GPS Not Updating\n"
+                        "6️⃣ Vehicle Standing\n"
+                        "7️⃣ Other"
+                    )
             
             logger.info(f"Workshop: Reselected to {new_issue_type} for {user_phone}")
             

@@ -165,7 +165,7 @@ def _route_to_flow_handler(
     elif issue_type == "BATTERY_DISCONNECT":
         state_manager.set_state(user_phone, ConversationStep.BATTERY_MAINTENANCE_CONFIRMATION)
         return (
-            "Kya battery maintenance ya replacement ke liye disconnect ki gayi hai?\n\n"
+            "Kya vehicle ki battery maintenance, replacement ya repair ke liye disconnect ki gayi hai?\n\n"
             "1️⃣ Yes\n"
             "2️⃣ No"
         )
