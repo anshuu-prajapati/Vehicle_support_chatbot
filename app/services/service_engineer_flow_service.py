@@ -393,10 +393,11 @@ def _handle_service_engineer_message_internal(
     # Get current state
     state = state_manager.get_state(user.phone_number)
     
-    # If user sends 1-8 and has NO active conversation (or is at MAIN_MENU)
-    # Route directly to the corresponding flow
-    if normalized in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-        if not state or state.current_step == ConversationStep.MAIN_MENU.value:
+    # Handle initial status selection (numeric OR natural language)
+    # This applies when user has NO active conversation (or is at MAIN_MENU)
+    if not state or state.current_step == ConversationStep.MAIN_MENU.value:
+        # Check if it's a numeric selection (1-8)
+        if normalized in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             logger.info(f"User {user.phone_number} selected option {normalized} from GPS alert")
             
             # Map number to issue type
@@ -422,6 +423,50 @@ def _handle_service_engineer_message_internal(
             
             # Route directly to flow
             return _route_to_flow_handler(user.phone_number, issue_type, state_manager, db)
+        
+        # Not a number - check if it's a natural language response
+        # Skip if it's a greeting (will be handled below)
+        if not greeting_service.is_greeting(normalized):
+            # Try to classify the user's natural language input
+            logger.info(f"User {user.phone_number} sent natural language: '{text_body[:50]}...'")
+            
+            issue_type, method = classify_customer_intent(text_body)
+            
+            logger.info(
+                f"Initial selection classified as: {issue_type} using {method}",
+                extra={
+                    "phone": user.phone_number,
+                    "message": text_body[:100],
+                    "classification": issue_type,
+                    "method": method
+                }
+            )
+            
+            # If classification is confident (not UNKNOWN), route automatically
+            if issue_type != "UNKNOWN":
+                # Store in context
+                state_manager.update_context(user.phone_number, {
+                    "issue_classification": issue_type,
+                    "classification_method": f"NLP_{method}",
+                    "customer_response": text_body
+                })
+                
+                # Route directly to flow
+                return _route_to_flow_handler(user.phone_number, issue_type, state_manager, db)
+            
+            # Classification returned UNKNOWN - ask user to select from options
+            logger.info(f"Could not classify '{text_body[:50]}' - asking for selection")
+            return (
+                "⚠️ Kripya option number select karein.\n\n"
+                "1️⃣ Workshop / Service Center\n"
+                "2️⃣ Accident\n"
+                "3️⃣ Battery Disconnect\n"
+                "4️⃣ GPS Removed\n"
+                "5️⃣ GPS Damaged\n"
+                "6️⃣ Vehicle Running but GPS Not Updating\n"
+                "7️⃣ Vehicle Standing\n"
+                "8️⃣ Other"
+            )
     
     # Handle greetings
     if greeting_service.is_greeting(normalized):
