@@ -173,11 +173,9 @@ def _route_to_flow_handler(
     elif issue_type == "GPS_REMOVED":
         state_manager.set_state(user_phone, ConversationStep.GPS_REMOVED_REINSTALL_DATE)
         return (
-            "GPS ko dobara install kab karwana hai?\n"
-            "When do you want to reinstall the GPS?\n\n"
-            "Kripya date aur time dein (DD/MM/YYYY HH:MM):\n"
-            "Please provide date and time (DD/MM/YYYY HH:MM):\n\n"
-            "Example: 16/06/2026 10:00"
+            "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?\n\n"
+            "1️⃣ Yes\n"
+            "2️⃣ No"
         )
     
     elif issue_type == "GPS_DAMAGED":

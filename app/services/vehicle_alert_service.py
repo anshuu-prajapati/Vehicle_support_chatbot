@@ -116,7 +116,7 @@ class VehicleAlertService:
             msg += f"Vehicle *{vehicle_number}* se GPS data receive nahi ho raha hai.\n\n"
             msg += f"📍 Last Known Location: {location}\n"
             msg += f"🕐 Last Update: {last_gps}\n\n"
-            msg += "Kripya issue ka reason select karein:\n\n"
+            msg += "Kripya batayein ki aapki vehicle ki current status kya hai:\n\n"
             msg += "1️⃣ Workshop / Service Center\n"
             msg += "2️⃣ Accident\n"
             msg += "3️⃣ Battery Disconnect\n"
