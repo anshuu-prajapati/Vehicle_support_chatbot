@@ -3,8 +3,8 @@ GPS Removed Flow Handler
 
 Flow:
 Customer selects: 4️⃣ GPS Removed
-Q1: Maintenance/Repair confirmation (Yes/No)
-  - YES → Q2: Expected date → Close Case
+Q1: Maintenance/Repair confirmation (LLM-driven)
+  - YES → Q2: Expected date → Close Case  
   - NO → GPS Reinstallation Flow (Q3-Q7) → Service Request
 """
 import logging
@@ -21,50 +21,6 @@ logger = logging.getLogger("app.gps_removed_flow")
 def _normalize_text(text: str) -> str:
     """Normalize text for comparison"""
     return text.strip().lower() if text else ""
-
-
-def _is_affirmative(text: str) -> bool:
-    """Check if response is affirmative - supports natural language"""
-    normalized = _normalize_text(text)
-    affirmative_patterns = [
-        "haan", "haa", "yes", "y", "h", "1", "हाँ", "हां",
-        "maintenance", "repair", "service", "testing",
-        "maintenance ke liye", "service ke liye", "repair ke liye",
-        "testing ke liye", "nikala hai", "remove kiya hai",
-        "isi number par", "same number", "yes this number",
-        "haan kuch information", "information deni hai"
-    ]
-    
-    # Check if it's numeric "1"
-    if normalized == "1":
-        return True
-    
-    # Check if any affirmative pattern is in the text
-    return any(pattern in normalized for pattern in affirmative_patterns)
-
-
-def _is_negative(text: str) -> bool:
-    """Check if response is negative - supports natural language"""
-    normalized = _normalize_text(text)
-    negative_patterns = [
-        "nahi", "na", "no", "nahin", "n", "2", "नहीं",
-        "chori", "stolen", "theft",
-        "dobara lagwana", "reinstall", "install karna",
-        "remove ho gaya", "nikal gaya", "detach ho gaya",
-        "dusra number", "doosra number", "alternate number",
-        "another number", "different number"
-    ]
-    
-    # Check if it's numeric "2"
-    if normalized == "2":
-        return True
-    
-    # Check for maintenance/service patterns - if found, NOT negative
-    if any(word in normalized for word in ["maintenance", "repair", "service", "testing"]):
-        return False
-    
-    # Check if any negative pattern is in the text
-    return any(pattern in normalized for pattern in negative_patterns)
 
 
 def _validate_date(date_str: str) -> tuple:
@@ -91,6 +47,141 @@ def _validate_phone(phone: str) -> bool:
     return len(cleaned) >= 10 and len(cleaned) <= 15
 
 
+def _is_temporary_removal(text: str) -> bool:
+    """
+    Check if GPS removal is temporary (maintenance/repair) using LLM understanding.
+    Returns True if temporary removal for maintenance/repair/testing.
+    """
+    from app.ai.groq_llm import generate_response
+    
+    normalized = text.strip().lower() if text else ""
+    
+    # Quick check for simple affirmative responses
+    simple_yes = ["haan", "haa", "yes", "y", "h", "ji", "ji haan"]
+    if normalized in simple_yes:
+        return True
+    
+    # Quick check for simple negative responses
+    simple_no = ["nahi", "na", "no", "nahin", "n"]
+    if normalized in simple_no:
+        return False
+    
+    # Use LLM for natural language understanding
+    try:
+        prompt = f"""Determine if GPS device was removed temporarily for maintenance/repair/testing.
+
+User was asked: "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?"
+
+User replied: "{text}"
+
+Examples of YES (temporary removal for maintenance):
+- "haan maintenance ke liye nikala hai"
+- "service ke liye remove kiya hai"
+- "repair chal rahi hai"
+- "testing ke liye nikala hai"
+- "checking ke liye remove kiya"
+
+Examples of NO (permanent removal or reinstallation needed):
+- "nahi"
+- "GPS nikal gaya hai"
+- "GPS dobara lagwana hai"
+- "GPS reinstall karna hai"
+- "device remove ho gaya hai"
+- "chori ho gaya"
+
+Respond with ONLY ONE WORD: YES or NO"""
+
+        response = generate_response(prompt).strip().upper()
+        
+        logger.info(f"LLM temporary removal check: '{text[:50]}' -> {response}")
+        
+        return response == "YES"
+        
+    except Exception as e:
+        logger.error(f"LLM temporary removal check failed: {str(e)}")
+        # Fallback to keyword matching
+        temp_keywords = ["maintenance", "repair", "service", "testing", "checking"]
+        permanent_keywords = ["dobara", "reinstall", "lagwana", "chori", "stolen"]
+        
+        has_temp = any(keyword in normalized for keyword in temp_keywords)
+        has_permanent = any(keyword in normalized for keyword in permanent_keywords)
+        
+        if has_permanent:
+            return False
+        return has_temp
+
+
+def _wants_alternate_number(text: str) -> bool:
+    """
+    Check if user wants to use alternate contact number using LLM understanding.
+    Returns True if wants alternate number.
+    """
+    from app.ai.groq_llm import generate_response
+    
+    normalized = text.strip().lower() if text else ""
+    
+    # Quick check for affirmative (same number)
+    same_number_patterns = ["isi number", "same number", "yehi number", "this number", "haan"]
+    if any(pattern in normalized for pattern in same_number_patterns):
+        return False
+    
+    # Quick check for alternate number request
+    alternate_patterns = ["alternate", "dusra", "doosra", "different", "aur number"]
+    if any(pattern in normalized for pattern in alternate_patterns):
+        return True
+    
+    # Use LLM for natural language understanding
+    try:
+        prompt = f"""Determine if user wants to use an alternate contact number or the same registered number.
+
+User was asked: "Kya engineer isi number par sampark kare ya koi aur number use kare?"
+
+User replied: "{text}"
+
+Examples of SAME NUMBER (no alternate):
+- "isi number par sampark karein"
+- "same number"
+- "yehi number theek hai"
+- "haan isi par"
+
+Examples of ALTERNATE NUMBER:
+- "is number par nahi"
+- "alternate number use karein"
+- "doosra number note karein"
+- "different number"
+
+Respond with: SAME or ALTERNATE"""
+
+        response = generate_response(prompt).strip().upper()
+        
+        logger.info(f"LLM contact number check: '{text[:50]}' -> {response}")
+        
+        return response == "ALTERNATE"
+        
+    except Exception as e:
+        logger.error(f"LLM contact number check failed: {str(e)}")
+        # Fallback
+        return any(word in normalized for word in ["alternate", "dusra", "doosra", "aur number"])
+
+
+def _has_additional_info(text: str) -> bool:
+    """
+    Check if user wants to provide additional information using LLM understanding.
+    Returns True if wants to provide info.
+    """
+    normalized = text.strip().lower() if text else ""
+    
+    # Quick check
+    if normalized in ["nahi", "na", "no"]:
+        return False
+    
+    # If user provides actual information (more than just yes/no)
+    if len(text.strip()) > 10:
+        return True
+    
+    return False
+
+
 def _get_registered_mobile(user_phone: str, db: Session) -> str:
     """Get registered mobile number for user"""
     try:
@@ -110,7 +201,6 @@ def _get_vehicle_number_from_db(user_phone: str, db: Session) -> str:
         
         user = db.query(User).filter(User.phone_number == user_phone).first()
         if not user:
-            logger.warning(f"No user found for phone {user_phone}")
             return None
         
         vehicle = db.query(Vehicle).filter(
@@ -119,18 +209,13 @@ def _get_vehicle_number_from_db(user_phone: str, db: Session) -> str:
             (Vehicle.driver_id == user.id)
         ).first()
         
-        if vehicle:
-            logger.info(f"Found vehicle {vehicle.vehicle_number} for user {user_phone}")
-            return vehicle.vehicle_number
-        else:
-            logger.warning(f"No vehicle found for user {user_phone}")
-            return None
+        return vehicle.vehicle_number if vehicle else None
     except Exception as e:
         logger.error(f"Error getting vehicle number: {str(e)}")
         return None
 
 
-# GPS Removed sub-steps stored in context
+# GPS Removed sub-steps
 GPS_REMOVED_EXPECTED_DATE = "GPS_REMOVED_EXPECTED_DATE"
 GPS_REMOVED_INSTALLATION_DATE = "GPS_REMOVED_INSTALLATION_DATE"
 GPS_REMOVED_LOCATION = "GPS_REMOVED_LOCATION"
@@ -138,7 +223,6 @@ GPS_REMOVED_CONTACT_CONFIRM = "GPS_REMOVED_CONTACT_CONFIRM"
 GPS_REMOVED_ALTERNATE_NUMBER = "GPS_REMOVED_ALTERNATE_NUMBER"
 GPS_REMOVED_AVAILABILITY_DATE = "GPS_REMOVED_AVAILABILITY_DATE"
 GPS_REMOVED_ADDITIONAL_INFO = "GPS_REMOVED_ADDITIONAL_INFO"
-GPS_REMOVED_ADDITIONAL_NOTES = "GPS_REMOVED_ADDITIONAL_NOTES"
 
 
 def handle_gps_removed_flow(
@@ -149,48 +233,35 @@ def handle_gps_removed_flow(
     db: Session
 ) -> str:
     """
-    Handle GPS Removed flow.
+    Handle GPS Removed flow with LLM-driven conversational understanding.
     
     Flow:
-    Q1: Maintenance/Repair confirmation (Yes/No)
+    Q1: Temporary removal for maintenance? (LLM understands)
       - YES → Q2: Expected date → Close
-      - NO → Reinstallation Flow → Service Request
-    
-    Args:
-        user_phone: User's phone number
-        text_body: User's message
-        current_step: Current conversation step
-        state_manager: StateManager instance
-        db: Database session
-        
-    Returns:
-        Response message
+      - NO → Reinstallation flow (Q3-Q7) → Service Request
     """
-    normalized = _normalize_text(text_body)
     context = state_manager.get_context(user_phone)
     gps_sub_step = context.get("gps_removed_sub_step")
     
     logger.info(
-        f"GPS Removed Flow: Processing message",
+        f"GPS Removed Flow: Processing",
         extra={
             "phone": user_phone,
             "step": current_step,
             "sub_step": gps_sub_step,
-            "message_preview": text_body[:50]
+            "message": text_body[:50]
         }
     )
     
-    # Main step: GPS_REMOVED_REINSTALL_DATE handles all sub-steps
     if current_step == ConversationStep.GPS_REMOVED_REINSTALL_DATE.value:
         
-        # Q2: Expected operational date (after YES to Q1)
+        # Q2: Expected operational date (after YES - temporary removal)
         if gps_sub_step == GPS_REMOVED_EXPECTED_DATE:
             parsed_date, error = _validate_date(text_body)
             
             if error:
                 return f"⚠️ {error}"
             
-            # Check if date is not in the past
             if parsed_date < date.today():
                 return (
                     "⚠️ Purani date nahi select kar sakte.\n"
@@ -200,35 +271,32 @@ def handle_gps_removed_flow(
             
             expected_date_str = parsed_date.strftime("%d-%m-%Y")
             
-            logger.info(f"GPS Removed: Maintenance case closed with expected date {expected_date_str} for {user_phone}")
+            logger.info(f"GPS Removed: Temp removal case closed, date {expected_date_str}")
             
-            # Store final data
             state_manager.update_context(user_phone, {
                 "gps_removed_expected_date": expected_date_str,
                 "case_status": "CLOSED"
             })
             
-            # Clear state (conversation complete)
             state_manager.clear_state(user_phone)
             
             return (
                 "✅ Dhanyavaad.\n\n"
                 "Humne note kar liya hai ki GPS device maintenance ke liye remove kiya gaya hai.\n\n"
-                f"Expected operational date: 📅 *{expected_date_str}*\n\n"
-                "Is wajah se GPS inactive hona expected hai aur is samay kisi service engineer ki avashyakta nahi hai.\n\n"
+                f"Expected operational date: 📅 {expected_date_str}\n\n"
+                "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
                 "Agar GPS dobara operational hone ke baad bhi issue rahta hai, to aap support request raise kar sakte hain.\n\n"
                 "🙏 Thank You\n\n"
-                "Case Status: *Closed*"
+                "Case Status: Closed"
             )
         
-        # Q3: Preferred Installation Date (after NO to Q1)
+        # Q3: Installation date (after NO - needs reinstallation)
         if gps_sub_step == GPS_REMOVED_INSTALLATION_DATE:
             parsed_date, error = _validate_date(text_body)
             
             if error:
                 return f"⚠️ {error}"
             
-            # Check if date is not in the past
             if parsed_date < date.today():
                 return (
                     "⚠️ Purani date nahi select kar sakte.\n"
@@ -238,7 +306,7 @@ def handle_gps_removed_flow(
             
             installation_date_str = parsed_date.strftime("%d-%m-%Y")
             
-            logger.info(f"GPS Removed: Installation date saved for {user_phone}")
+            logger.info(f"GPS Removed: Installation date {installation_date_str}")
             state_manager.update_context(user_phone, {
                 "gps_removed_installation_date": installation_date_str,
                 "gps_removed_sub_step": GPS_REMOVED_LOCATION
@@ -246,41 +314,43 @@ def handle_gps_removed_flow(
             
             return (
                 "Vehicle ki current location kya hai?\n\n"
-                "📍 Current Vehicle Location\n\n"
-                "Kripya pura address dein."
+                "📍 Current Vehicle Location"
             )
         
-        # Q4: Current Vehicle Location
+        # Q4: Location
         if gps_sub_step == GPS_REMOVED_LOCATION:
             if len(text_body.strip()) < 5:
-                return (
-                    "⚠️ Kripya pura address dein.\n\n"
-                    "Example: Shop No. 5, Main Road, Mumbai - 400001"
-                )
+                return "⚠️ Kripya pura address dein."
             
-            logger.info(f"GPS Removed: Location saved for {user_phone}")
+            logger.info(f"GPS Removed: Location saved")
             state_manager.update_context(user_phone, {
                 "gps_removed_location": text_body.strip(),
                 "gps_removed_sub_step": GPS_REMOVED_CONTACT_CONFIRM
             })
             
-            # Get registered mobile number
             registered_mobile = _get_registered_mobile(user_phone, db)
             
             return (
-                "Humare records ke anusaar aapka registered mobile number hai:\n\n"
-                f"📱 *{registered_mobile}*\n\n"
-                "Kya isi number par service engineer sampark kare?\n\n"
-                "1️⃣ Haan, isi number par\n"
-                "2️⃣ Nahi, doosra number dena hai"
+                "Humare records ke anusaar registered mobile number:\n\n"
+                f"📱 {registered_mobile}\n\n"
+                "Kya engineer isi number par sampark kare ya koi aur number use kare?"
             )
         
-        # Q5: Contact number confirmation
+        # Q5: Contact confirmation
         if gps_sub_step == GPS_REMOVED_CONTACT_CONFIRM:
-            if _is_affirmative(text_body):
-                # Use existing registered number
+            if _wants_alternate_number(text_body):
+                # User wants alternate number
+                logger.info(f"GPS Removed: Requesting alternate number")
+                state_manager.update_context(user_phone, {
+                    "gps_removed_sub_step": GPS_REMOVED_ALTERNATE_NUMBER
+                })
+                
+                return "Kripya alternate mobile number share karein.\n\n📱 Alternate Number"
+            
+            else:
+                # User wants same number
                 registered_mobile = _get_registered_mobile(user_phone, db)
-                logger.info(f"GPS Removed: Using registered number for {user_phone}")
+                logger.info(f"GPS Removed: Using registered number")
                 
                 state_manager.update_context(user_phone, {
                     "gps_removed_contact": registered_mobile,
@@ -288,60 +358,33 @@ def handle_gps_removed_flow(
                 })
                 
                 return (
-                    "Vehicle GPS installation ke liye kab available hogi?\n\n"
-                    "📅 Expected Availability Date\n\n"
-                    "(Example: 22-06-2026)"
-                )
-            
-            elif _is_negative(text_body):
-                # Ask for alternate number
-                logger.info(f"GPS Removed: Requesting alternate number for {user_phone}")
-                state_manager.update_context(user_phone, {
-                    "gps_removed_sub_step": GPS_REMOVED_ALTERNATE_NUMBER
-                })
-                
-                return (
-                    "Kripya alternative mobile number share karein.\n\n"
-                    "📱 Alternate Mobile Number\n\n"
-                    "Example: +919876543210 or 9876543210"
-                )
-            
-            else:
-                # Invalid response - show options again
-                return (
-                    "⚠️ Kripya niche diye gaye options mein se ek chunen:\n\n"
-                    "1️⃣ Haan, isi number par\n"
-                    "2️⃣ Nahi, doosra number dena hai"
+                    "Vehicle installation ke liye kab available hogi?\n\n"
+                    "📅 Example: 22-06-2026"
                 )
         
-        # Q5b: Alternate number input
+        # Q5b: Alternate number
         if gps_sub_step == GPS_REMOVED_ALTERNATE_NUMBER:
             if not _validate_phone(text_body):
-                return (
-                    "⚠️ Kripya sahi mobile number dein.\n\n"
-                    "Example: +919876543210 or 9876543210"
-                )
+                return "⚠️ Kripya valid mobile number dein.\n\nExample: 9876543210"
             
-            logger.info(f"GPS Removed: Alternate number saved for {user_phone}")
+            logger.info(f"GPS Removed: Alternate number saved")
             state_manager.update_context(user_phone, {
                 "gps_removed_contact": text_body.strip(),
                 "gps_removed_sub_step": GPS_REMOVED_AVAILABILITY_DATE
             })
             
             return (
-                "Vehicle GPS installation ke liye kab available hogi?\n\n"
-                "📅 Expected Availability Date\n\n"
-                "(Example: 22-06-2026)"
+                "Vehicle installation ke liye kab available hogi?\n\n"
+                "📅 Example: 22-06-2026"
             )
         
-        # Q6: Vehicle availability date
+        # Q6: Availability date
         if gps_sub_step == GPS_REMOVED_AVAILABILITY_DATE:
             parsed_date, error = _validate_date(text_body)
             
             if error:
                 return f"⚠️ {error}"
             
-            # Check if date is not in the past
             if parsed_date < date.today():
                 return (
                     "⚠️ Purani date nahi select kar sakte.\n"
@@ -349,105 +392,56 @@ def handle_gps_removed_flow(
                     "Example: 22-06-2026"
                 )
             
-            expected_date_str = parsed_date.strftime("%d-%m-%Y")
+            availability_date_str = parsed_date.strftime("%d-%m-%Y")
             
-            logger.info(f"GPS Removed: Availability date saved for {user_phone}")
+            logger.info(f"GPS Removed: Availability date {availability_date_str}")
             state_manager.update_context(user_phone, {
-                "gps_removed_availability_date": expected_date_str,
+                "gps_removed_availability_date": availability_date_str,
                 "gps_removed_sub_step": GPS_REMOVED_ADDITIONAL_INFO
             })
             
-            return (
-                "Hum GPS re-installation ke liye nearest service engineer assign karne ja rahe hain.\n\n"
-                "Kya aap humein koi additional information dena chahte hain?\n\n"
-                "1️⃣ Yes\n"
-                "2️⃣ No"
-            )
+            return "Kya installation visit se pehle koi aur jankari share karna chahenge?"
         
         # Q7: Additional information
         if gps_sub_step == GPS_REMOVED_ADDITIONAL_INFO:
-            if _is_affirmative(text_body):
-                # Ask for additional notes
-                logger.info(f"GPS Removed: Requesting additional notes for {user_phone}")
-                state_manager.update_context(user_phone, {
-                    "gps_removed_sub_step": GPS_REMOVED_ADDITIONAL_NOTES
-                })
-                
-                return (
-                    "Kripya apni additional information share karein.\n\n"
-                    "📝 Additional Notes"
-                )
-            
-            elif _is_negative(text_body):
-                # No additional info - create service request
-                logger.info(f"GPS Removed: No additional info - creating service request for {user_phone}")
-                return _create_gps_reinstallation_request(user_phone, state_manager, db, None)
-            
+            if _has_additional_info(text_body):
+                # User provided additional info
+                additional_notes = text_body.strip()
+                logger.info(f"GPS Removed: Creating service request with notes")
+                return _create_gps_reinstallation_request(user_phone, state_manager, db, additional_notes)
             else:
-                # Invalid response - show options again
-                return (
-                    "⚠️ Kripya niche diye gaye options mein se ek chunen:\n\n"
-                    "1️⃣ Yes\n"
-                    "2️⃣ No"
-                )
+                # No additional info
+                logger.info(f"GPS Removed: Creating service request without notes")
+                return _create_gps_reinstallation_request(user_phone, state_manager, db, None)
         
-        # Q7b: Additional notes input
-        if gps_sub_step == GPS_REMOVED_ADDITIONAL_NOTES:
-            additional_notes = text_body.strip()
-            logger.info(f"GPS Removed: Additional notes '{additional_notes[:50]}...' - creating service request for {user_phone}")
+        # Q1: Initial maintenance check (LLM-driven)
+        if _is_temporary_removal(text_body):
+            # Temporary removal for maintenance
+            logger.info(f"GPS Removed: Temporary removal (LLM confirmed)")
+            state_manager.update_context(user_phone, {
+                "gps_removed_sub_step": GPS_REMOVED_EXPECTED_DATE
+            })
             
-            try:
-                result = _create_gps_reinstallation_request(user_phone, state_manager, db, additional_notes)
-                logger.info(f"GPS Removed: Service request function returned successfully for {user_phone}")
-                return result
-            except Exception as e:
-                logger.error(f"GPS Removed: Exception in creating service request: {str(e)}", exc_info=True)
-                state_manager.clear_state(user_phone)
-                return (
-                    "⚠️ Service request create karne mein technical error aaya.\n"
-                    "⚠️ Technical error creating service request.\n\n"
-                    f"Error: {str(e)}\n\n"
-                    "Kripya support team se sampark karein.\n"
-                    "Please contact support team."
-                )
-        
-        # Q1: Initial maintenance/repair confirmation
-        if _is_affirmative(text_body):
-            # YES - Maintenance/repair - ask for expected date
-            logger.info(f"GPS Removed: YES (Maintenance) - asking expected date for {user_phone}")
-            state_manager.update_context(user_phone, {"gps_removed_sub_step": GPS_REMOVED_EXPECTED_DATE})
             return (
-                "Dhanyavaad. 🙏\n\n"
                 "Vehicle ya GPS system dobara kab operational hoga?\n\n"
-                "📅 Expected Running Date\n\n"
-                "(Example: 20-06-2026)"
-            )
-        
-        elif _is_negative(text_body):
-            # NO - Not maintenance - start reinstallation flow
-            logger.info(f"GPS Removed: NO (Not maintenance) - starting reinstallation flow for {user_phone}")
-            state_manager.update_context(user_phone, {"gps_removed_sub_step": GPS_REMOVED_INSTALLATION_DATE})
-            return (
-                "GPS ko dobara install kab karwana hai?\n\n"
-                "📅 Preferred Installation Date\n\n"
-                "(Example: 20-06-2026)"
+                "📅 Example: 20-06-2026"
             )
         
         else:
-            # Invalid response
+            # Needs reinstallation
+            logger.info(f"GPS Removed: Needs reinstallation (LLM confirmed)")
+            state_manager.update_context(user_phone, {
+                "gps_removed_sub_step": GPS_REMOVED_INSTALLATION_DATE
+            })
+            
             return (
-                "⚠️ Kripya valid option select karein.\n\n"
-                "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?\n\n"
-                "1️⃣ Yes\n"
-                "2️⃣ No"
+                "GPS ko dobara install kab karwana hai?\n\n"
+                "📅 Preferred Installation Date\n\n"
+                "Example: 20-06-2026"
             )
     
-    # Unknown step
     logger.warning(f"Unknown step in GPS removed flow: {current_step}")
-    return (
-        "⚠️ Kuch galat ho gaya. Kripya 'reset' type karein.\n"
-        "⚠️ Something went wrong. Please type 'reset'."
-    )
+    return "⚠️ Kuch galat ho gaya. Kripya 'reset' type karein."
 
 
 def _create_gps_reinstallation_request(
@@ -456,37 +450,23 @@ def _create_gps_reinstallation_request(
     db: Session,
     additional_notes: str = None
 ) -> str:
-    """
-    Create GPS Reinstallation Service Request.
-    
-    Args:
-        user_phone: User's phone number
-        state_manager: StateManager instance
-        db: Database session
-        additional_notes: Optional additional information from customer
-        
-    Returns:
-        Final confirmation message
-    """
+    """Create GPS Reinstallation Service Request."""
     try:
         context = state_manager.get_context(user_phone)
         
-        # Retrieve all collected information
         installation_date = context.get("gps_removed_installation_date", "Not specified")
         vehicle_location = context.get("gps_removed_location", "Not specified")
         contact_number = context.get("gps_removed_contact", user_phone)
         availability_date = context.get("gps_removed_availability_date", installation_date)
         
-        # Get vehicle number from context or database
+        # Get vehicle number
         vehicle_number = context.get("vehicle_number")
         if not vehicle_number:
             vehicle_number = _get_vehicle_number_from_db(user_phone, db)
-        
         if not vehicle_number:
-            logger.error(f"GPS Removed: No vehicle number found for {user_phone}")
             vehicle_number = "UNKNOWN"
         
-        # Build issue description
+        # Build description
         issue_description = f"GPS Reinstallation Request\n"
         issue_description += f"Preferred Installation Date: {installation_date}\n"
         issue_description += f"Vehicle Location: {vehicle_location}\n"
@@ -496,7 +476,7 @@ def _create_gps_reinstallation_request(
         if additional_notes:
             issue_description += f"\n\nAdditional Information:\n{additional_notes}"
         
-        # Create service request ticket
+        # Create ticket
         ticket = create_service_request_ticket(
             vehicle_number=vehicle_number,
             issue_type="GPS_REINSTALLATION",
@@ -507,51 +487,32 @@ def _create_gps_reinstallation_request(
         
         ticket_number = ticket.ticket_number if ticket else "N/A"
         
-        logger.info(
-            f"GPS Removed: Service request created",
-            extra={
-                "phone": user_phone,
-                "ticket": ticket_number,
-                "installation_date": installation_date,
-                "location": vehicle_location
-            }
-        )
+        logger.info(f"GPS Removed: Service request created - {ticket_number}")
         
-        # Store ticket in context
         state_manager.update_context(user_phone, {
             "service_request_id": ticket_number,
-            "case_status": "SERVICE_REQUEST_CREATED",
-            "conversation_complete": True  # Mark as complete but don't clear yet
+            "case_status": "SERVICE_REQUEST_CREATED"
         })
         
-        # Build final message
-        message = (
-            "✅ Dhanyavaad.\n\n"
-            "Aapki GPS Reinstallation Service Request safalta purvak create kar di gayi hai.\n\n"
-            "Hamare nearest service engineer jald hi aapse sampark karenge.\n\n"
-            "🙏 Thank You\n\n"
-            "*Service Request Status:* Created\n"
-            f"*Ticket Number:* {ticket_number}"
-        )
-        
-        # Clear state AFTER building message (will be cleared after message is sent)
-        state_manager.clear_state(user_phone)
-        
-        return message
-        
-    except Exception as e:
-        logger.error(
-            f"GPS Removed: Failed to create service request: {str(e)}",
-            exc_info=True,
-            extra={"phone": user_phone}
-        )
-        
-        # Clear state on error
         state_manager.clear_state(user_phone)
         
         return (
-            "⚠️ Service request create karne mein error aaya.\n"
-            "⚠️ Error creating service request.\n\n"
-            "Kripya support team se sampark karein.\n"
-            "Please contact support team."
+            "✅ Dhanyavaad.\n\n"
+            "Aapki GPS Reinstallation Service Request safalta purvak create kar di gayi hai.\n\n"
+            "Hamare nearest service engineer jald hi aapse sampark karenge.\n\n"
+            f"📅 Installation Date: {installation_date}\n"
+            f"📍 Location: {vehicle_location}\n"
+            f"📱 Contact Number: {contact_number}\n\n"
+            "🙏 Thank You\n\n"
+            "Service Request Status: Created\n"
+            f"Ticket Number: {ticket_number}"
+        )
+        
+    except Exception as e:
+        logger.error(f"GPS Removed: Failed to create service request: {str(e)}", exc_info=True)
+        state_manager.clear_state(user_phone)
+        
+        return (
+            "⚠️ Service request create karne mein error aaya.\n\n"
+            "Kripya support team se sampark karein."
         )

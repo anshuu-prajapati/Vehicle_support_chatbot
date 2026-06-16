@@ -168,9 +168,8 @@ def _route_to_flow_handler(
     elif issue_type == "GPS_REMOVED":
         state_manager.set_state(user_phone, ConversationStep.GPS_REMOVED_REINSTALL_DATE)
         return (
-            "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?\n\n"
-            "1️⃣ Yes\n"
-            "2️⃣ No"
+            "Dhanyavaad. 🙏\n\n"
+            "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?"
         )
     
     elif issue_type == "GPS_DAMAGED":
