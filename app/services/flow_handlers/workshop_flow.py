@@ -22,13 +22,115 @@ def _normalize_text(text: str) -> str:
 
 
 def _is_affirmative(text: str) -> bool:
-    """Check if response is affirmative"""
-    return text in ["haan", "haa", "yes", "y", "h", "1", "हाँ", "हां"]
+    """
+    Check if response is affirmative using LLM-driven understanding.
+    Returns True if the text indicates YES/confirmation.
+    """
+    from app.ai.groq_llm import generate_response
+    
+    normalized = text.strip().lower() if text else ""
+    
+    # Quick check for simple yes responses
+    simple_yes = ["haan", "haa", "yes", "y", "h", "1", "हाँ", "हां", "ji", "ji haan"]
+    if normalized in simple_yes:
+        return True
+    
+    # If it's a simple no, return False quickly
+    simple_no = ["nahi", "na", "no", "nahin", "n", "2", "नहीं"]
+    if normalized in simple_no:
+        return False
+    
+    # Use LLM for natural language understanding
+    try:
+        prompt = f"""Determine if this response means YES/AFFIRMATIVE or NO/NEGATIVE.
+
+User was asked: "Kya vehicle filhaal workshop ya service center mein hai?"
+
+User replied: "{text}"
+
+Examples of YES:
+- "haan"
+- "yes"
+- "repair ke liye rakhi hai"
+- "service center mein khadi hai"
+- "workshop mein hai"
+- "garage mein hai"
+- "haan workshop mein hai"
+
+Examples of NO:
+- "nahi"
+- "no"
+- "workshop mein nahi hai"
+- "nahi khadi nahi hai"
+
+Respond with ONLY ONE WORD: YES or NO"""
+
+        response = generate_response(prompt).strip().upper()
+        
+        logger.info(f"LLM affirmative check: '{text[:50]}' -> {response}")
+        
+        return response == "YES"
+        
+    except Exception as e:
+        logger.error(f"LLM affirmative check failed: {str(e)}")
+        # Fallback to keyword matching
+        affirmative_keywords = ["workshop", "garage", "service center", "repair", "maintenance", "haan", "yes", "hai"]
+        return any(keyword in normalized for keyword in affirmative_keywords)
 
 
 def _is_negative(text: str) -> bool:
-    """Check if response is negative"""
-    return text in ["nahi", "na", "no", "nahin", "n", "2", "नहीं"]
+    """
+    Check if response is negative using LLM-driven understanding.
+    Returns True if the text indicates NO/rejection.
+    """
+    from app.ai.groq_llm import generate_response
+    
+    normalized = text.strip().lower() if text else ""
+    
+    # Quick check for simple no responses
+    simple_no = ["nahi", "na", "no", "nahin", "n", "2", "नहीं"]
+    if normalized in simple_no:
+        return True
+    
+    # If it's a simple yes, return False quickly
+    simple_yes = ["haan", "haa", "yes", "y", "h", "1", "हाँ", "हां", "ji", "ji haan"]
+    if normalized in simple_yes:
+        return False
+    
+    # Use LLM for natural language understanding
+    try:
+        prompt = f"""Determine if this response means YES/AFFIRMATIVE or NO/NEGATIVE.
+
+User was asked: "Kya vehicle filhaal workshop ya service center mein hai?"
+
+User replied: "{text}"
+
+Examples of YES:
+- "haan"
+- "yes"
+- "repair ke liye rakhi hai"
+- "service center mein khadi hai"
+
+Examples of NO:
+- "nahi"
+- "no"
+- "workshop mein nahi hai"
+- "road par hai"
+- "khadi hai bahar"
+
+Respond with ONLY ONE WORD: YES or NO"""
+
+        response = generate_response(prompt).strip().upper()
+        
+        logger.info(f"LLM negative check: '{text[:50]}' -> {response}")
+        
+        return response == "NO"
+        
+    except Exception as e:
+        logger.error(f"LLM negative check failed: {str(e)}")
+        # Fallback to keyword matching
+        negative_keywords = ["nahi", "no", "not", "नहीं"]
+        return any(keyword in normalized for keyword in negative_keywords)
 
 
 def _validate_date(date_str: str) -> tuple:
@@ -168,29 +270,27 @@ def handle_workshop_flow(
             
             return (
                 "✅ Dhanyavaad.\n\n"
-                "Humne note kar liya hai ki vehicle filhaal workshop/service center mein hai.\n\n"
-                f"Expected availability date: 📅 *{expected_date_str}*\n\n"
-                "Is wajah se GPS inactive hona expected hai aur is samay kisi service engineer ki avashyakta nahi hai.\n\n"
-                "Agar vehicle dobara chalu hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
-                "Hum hamesha aapki sahayata ke liye uplabdh hain.\n\n"
+                "Humne note kar liya hai ki vehicle filhaal workshop mein hai.\n\n"
+                f"Expected availability date: 📅 {expected_date_str}\n\n"
+                "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
+                "Agar vehicle operational hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
                 "🙏 Thank You\n\n"
-                "Case Status: *Closed*"
+                "Case Status: Closed"
             )
         
-        # Initial workshop confirmation (YES/NO)
-        if _is_affirmative(normalized):
-            # Ask for expected date
-            logger.info(f"Workshop: YES - asking expected date for {user_phone}")
+        # Initial workshop confirmation (YES/NO with LLM understanding)
+        if _is_affirmative(text_body):
+            # User confirmed vehicle is in workshop
+            logger.info(f"Workshop: YES (LLM confirmed) - asking expected date for {user_phone}")
             state_manager.update_context(user_phone, {"workshop_sub_step": WORKSHOP_EXPECTED_DATE})
             return (
-                "Dhanyavaad. 🙏\n\n"
-                "Kripya vehicle ke dobara chalu hone ya workshop se bahar aane ki expected date batayein.\n\n"
-                "📅 Expected Date: (Example: 20-06-2026)"
+                "Vehicle ke dobara operational hone ki expected date kya hai?\n\n"
+                "Example: 20-06-2026"
             )
         
-        elif _is_negative(normalized):
-            # Not in workshop - show 7 other options
-            logger.info(f"Workshop: NO - showing other options for {user_phone}")
+        elif _is_negative(text_body):
+            # User said vehicle is NOT in workshop - show 7 other options
+            logger.info(f"Workshop: NO (LLM confirmed) - showing other options for {user_phone}")
             state_manager.update_context(user_phone, {"workshop_sub_step": WORKSHOP_RESELECT})
             return (
                 "Dhanyavaad.\n\n"
@@ -206,13 +306,9 @@ def handle_workshop_flow(
             )
         
         else:
-            # Invalid response
-            return (
-                "⚠️ Kripya valid option select karein.\n\n"
-                "Kya vehicle filhaal workshop ya service center mein hai?\n\n"
-                "1️⃣ Yes\n"
-                "2️⃣ No"
-            )
+            # Could not determine yes or no - ask again
+            logger.warning(f"Workshop: Could not determine yes/no from '{text_body[:50]}' for {user_phone}")
+            return "⚠️ Kripya batayein ki vehicle workshop mein hai ya nahi."
     
     # Unknown step
     logger.warning(f"Unknown step in workshop flow: {current_step}")

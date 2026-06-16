@@ -148,9 +148,7 @@ def _route_to_flow_handler(
     if issue_type == "WORKSHOP":
         state_manager.set_state(user_phone, ConversationStep.WORKSHOP_CONFIRMATION)
         return (
-            "Kya vehicle filhaal workshop/service center mein repair ya maintenance ke liye hai?\n\n"
-            "1️⃣ Yes\n"
-            "2️⃣ No"
+            "Kya vehicle filhaal workshop/service center mein repair ya maintenance ke liye hai?"
         )
     
     elif issue_type == "ACCIDENT":
