@@ -184,8 +184,10 @@ def _route_to_flow_handler(
     elif issue_type == "VEHICLE_RUNNING":
         state_manager.set_state(user_phone, ConversationStep.VEHICLE_RUNNING_DRIVER_NAME)
         return (
-            "Driver ka naam kya hai?\n"
-            "What is the driver's name?"
+            "Dhanyavaad. 🙏\n\n"
+            "Hum samajh gaye hain ki vehicle chal rahi hai lekin GPS data receive nahi ho raha.\n\n"
+            "Kripya vehicle ki current location bata dijiye jahan inspection karwana hai.\n\n"
+            "📍 Example: Kirti Nagar, Delhi"
         )
     
     elif issue_type == "VEHICLE_STANDING":

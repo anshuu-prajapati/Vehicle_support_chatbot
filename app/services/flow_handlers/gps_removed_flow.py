@@ -466,23 +466,28 @@ def _create_gps_reinstallation_request(
         if not vehicle_number:
             vehicle_number = "UNKNOWN"
         
-        # Build description
-        issue_description = f"GPS Reinstallation Request\n"
-        issue_description += f"Preferred Installation Date: {installation_date}\n"
-        issue_description += f"Vehicle Location: {vehicle_location}\n"
-        issue_description += f"Contact Number: {contact_number}\n"
-        issue_description += f"Vehicle Available Date: {availability_date}"
+        # Parse dates to proper format for database
+        from datetime import datetime
+        try:
+            installation_date_obj = datetime.strptime(installation_date, "%d-%m-%Y").date() if installation_date != "Not specified" else None
+            availability_date_obj = datetime.strptime(availability_date, "%d-%m-%Y").date() if availability_date != "Not specified" else None
+        except:
+            installation_date_obj = None
+            availability_date_obj = None
         
-        if additional_notes:
-            issue_description += f"\n\nAdditional Information:\n{additional_notes}"
+        # Store additional notes in driver_name field (max 100 chars)
+        notes_field = additional_notes[:100] if additional_notes else None
         
-        # Create ticket
+        # Create ticket using proper Ticket model fields
         ticket = create_service_request_ticket(
             vehicle_number=vehicle_number,
             issue_type="GPS_REINSTALLATION",
             customer_phone=user_phone,
-            issue_description=issue_description,
-            priority="MEDIUM"
+            location=vehicle_location,
+            reinstallation_date=installation_date_obj,
+            vehicle_available_date=availability_date_obj,
+            owner_mobile=contact_number,
+            driver_name=notes_field  # Store additional notes in driver_name field
         )
         
         ticket_number = ticket.ticket_number if ticket else "N/A"
