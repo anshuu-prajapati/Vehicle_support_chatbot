@@ -14,6 +14,12 @@ from datetime import datetime, date
 from sqlalchemy.orm import Session
 
 from app.services.state_manager import StateManager, ConversationStep
+from app.services.clarification_handler import (
+    should_clarify,
+    generate_clarification_response,
+    get_context_explanation_for_step,
+    get_current_question_text
+)
 
 logger = logging.getLogger("app.accident_flow")
 
@@ -204,9 +210,24 @@ def handle_accident_flow(
             "phone": user_phone,
             "step": current_step,
             "sub_step": accident_sub_step,
-            "message_preview": text_body[:50]
+            "message": text_body[:50]
         }
     )
+    
+    # Check if user needs clarification
+    if should_clarify(text_body):
+        logger.info(f"Accident: User needs clarification at sub_step {accident_sub_step}")
+        
+        context_explanation = get_context_explanation_for_step(current_step, accident_sub_step)
+        current_question = get_current_question_text(current_step, accident_sub_step)
+        
+        clarification = generate_clarification_response(
+            user_message=text_body,
+            current_question=current_question,
+            context_explanation=context_explanation
+        )
+        
+        return clarification
     
     if current_step == ConversationStep.ACCIDENT_WORKSHOP_CONFIRMATION.value:
         

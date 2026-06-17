@@ -12,6 +12,12 @@ from datetime import datetime, date
 from sqlalchemy.orm import Session
 
 from app.services.state_manager import StateManager, ConversationStep
+from app.services.clarification_handler import (
+    should_clarify,
+    generate_clarification_response,
+    get_context_explanation_for_step,
+    get_current_question_text
+)
 
 logger = logging.getLogger("app.workshop_flow")
 
@@ -183,6 +189,22 @@ def handle_workshop_flow(
     """
     normalized = _normalize_text(text_body)
     context = state_manager.get_context(user_phone)
+    
+    # Check if user needs clarification
+    if should_clarify(text_body):
+        logger.info(f"Workshop: User needs clarification")
+        
+        workshop_sub_step = context.get("workshop_sub_step")
+        context_explanation = get_context_explanation_for_step(current_step, workshop_sub_step)
+        current_question = get_current_question_text(current_step, workshop_sub_step)
+        
+        clarification = generate_clarification_response(
+            user_message=text_body,
+            current_question=current_question,
+            context_explanation=context_explanation
+        )
+        
+        return clarification
     
     # Q1: Workshop confirmation
     if current_step == ConversationStep.WORKSHOP_CONFIRMATION.value:

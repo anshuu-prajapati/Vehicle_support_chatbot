@@ -15,6 +15,12 @@ from sqlalchemy.orm import Session
 
 from app.services.state_manager import StateManager, ConversationStep
 from app.services.ticket_service import create_service_request_ticket
+from app.services.clarification_handler import (
+    should_clarify,
+    generate_clarification_response,
+    get_context_explanation_for_step,
+    get_current_question_text
+)
 
 logger = logging.getLogger("app.gps_damaged_flow")
 
@@ -354,6 +360,21 @@ def handle_gps_damaged_flow(
             "message": text_body[:50]
         }
     )
+    
+    # Check if user needs clarification
+    if should_clarify(text_body):
+        logger.info(f"GPS Damaged: User needs clarification at sub_step {gps_sub_step}")
+        
+        context_explanation = get_context_explanation_for_step(current_step, gps_sub_step)
+        current_question = get_current_question_text(current_step, gps_sub_step)
+        
+        clarification = generate_clarification_response(
+            user_message=text_body,
+            current_question=current_question,
+            context_explanation=context_explanation
+        )
+        
+        return clarification
     
     if current_step == ConversationStep.GPS_DAMAGED_LOCATION.value:
         
