@@ -170,12 +170,10 @@ def handle_workshop_flow(
     db: Session
 ) -> str:
     """
-    Handle Workshop flow.
+    Handle Workshop flow - directly asks for expected operational date.
     
     Flow:
-    Q1: Kya vehicle workshop mein hai? (Yes/No)
-      - YES → Q2: Expected date → Close
-      - NO → Show 7 options → Route to selected
+    Q1: Expected date when vehicle will be operational → Close case
     
     Args:
         user_phone: User's phone number
@@ -187,16 +185,24 @@ def handle_workshop_flow(
     Returns:
         Response message
     """
-    normalized = _normalize_text(text_body)
-    context = state_manager.get_context(user_phone)
+    logger.info(
+        f"Workshop Flow: Processing message",
+        extra={
+            "phone": user_phone,
+            "step": current_step,
+            "message_preview": text_body[:50]
+        }
+    )
     
     # Check if user needs clarification
     if should_clarify(text_body):
         logger.info(f"Workshop: User needs clarification")
         
-        workshop_sub_step = context.get("workshop_sub_step")
-        context_explanation = get_context_explanation_for_step(current_step, workshop_sub_step)
-        current_question = get_current_question_text(current_step, workshop_sub_step)
+        context_explanation = (
+            "Hum pooch rahe hain ki vehicle workshop se kab operational hoga "
+            "taaki hum record mein note kar sakein."
+        )
+        current_question = "Vehicle ke dobara operational hone ki expected date kya hai?"
         
         clarification = generate_clarification_response(
             user_message=text_body,
@@ -206,131 +212,44 @@ def handle_workshop_flow(
         
         return clarification
     
-    # Q1: Workshop confirmation
+    # Q1: Expected date when vehicle will be operational
     if current_step == ConversationStep.WORKSHOP_CONFIRMATION.value:
-        workshop_sub_step = context.get("workshop_sub_step")
+        parsed_date, error = _validate_date(text_body)
         
-        # Handle reselection after NO
-        if workshop_sub_step == WORKSHOP_RESELECT:
-            # Try numeric selection first
-            option_map = {
-                "1": "ACCIDENT",
-                "2": "BATTERY_DISCONNECT",
-                "3": "GPS_REMOVED",
-                "4": "GPS_DAMAGED",
-                "5": "VEHICLE_RUNNING",
-                "6": "VEHICLE_STANDING",
-                "7": "UNKNOWN"
-            }
-            
-            new_issue_type = option_map.get(normalized)
-            
-            # If not a valid number, try intent classification
-            if not new_issue_type:
-                # Import intent classification
-                from app.services.intent_classification_service import classify_customer_intent
-                
-                # Classify the text response
-                new_issue_type, method = classify_customer_intent(text_body)
-                
-                logger.info(f"Workshop reselection: Classified '{text_body}' as {new_issue_type} using {method}")
-                
-                # If classification returns UNKNOWN and text doesn't look like an attempt, show error
-                if new_issue_type == "UNKNOWN" and len(text_body.strip()) < 3:
-                    return (
-                        "⚠️ Kripya 1-7 ke beech ek option select karein.\n\n"
-                        "1️⃣ Accident\n"
-                        "2️⃣ Battery Disconnect\n"
-                        "3️⃣ GPS Removed\n"
-                        "4️⃣ GPS Damaged\n"
-                        "5️⃣ Vehicle Running but GPS Not Updating\n"
-                        "6️⃣ Vehicle Standing\n"
-                        "7️⃣ Other"
-                    )
-            
-            logger.info(f"Workshop: Reselected to {new_issue_type} for {user_phone}")
-            
-            # Update context with new selection
-            state_manager.update_context(user_phone, {
-                "issue_classification": new_issue_type,
-                "reclassified_from": "WORKSHOP",
-                "workshop_sub_step": None
-            })
-            
-            # Route to new flow
-            from app.services.service_engineer_flow_service import _route_to_flow_handler
-            return _route_to_flow_handler(user_phone, new_issue_type, state_manager, db)
+        if error:
+            return f"⚠️ {error}"
         
-        # Handle expected date input
-        if workshop_sub_step == WORKSHOP_EXPECTED_DATE:
-            parsed_date, error = _validate_date(text_body)
-            
-            if error:
-                return f"⚠️ {error}"
-            
-            # Check if date is not in the past
-            if parsed_date < date.today():
-                return (
-                    "⚠️ Purani date nahi select kar sakte.\n"
-                    "Kripya aaj ya future ki date dein.\n\n"
-                    "Example: 20-06-2026"
-                )
-            
-            # Format date for display
-            expected_date_str = parsed_date.strftime("%d-%m-%Y")
-            
-            logger.info(f"Workshop: Case closed with expected date {expected_date_str} for {user_phone}")
-            
-            # Store final data
-            state_manager.update_context(user_phone, {
-                "workshop_expected_date": expected_date_str,
-                "case_status": "CLOSED"
-            })
-            
-            # Clear state (conversation complete)
-            state_manager.clear_state(user_phone)
-            
+        # Check if date is not in the past
+        if parsed_date < date.today():
             return (
-                "✅ Dhanyavaad.\n\n"
-                "Humne note kar liya hai ki vehicle filhaal workshop mein hai.\n\n"
-                f"Expected availability date: 📅 {expected_date_str}\n\n"
-                "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
-                "Agar vehicle operational hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
-                "🙏 Thank You\n\n"
-                "Case Status: Closed"
-            )
-        
-        # Initial workshop confirmation (YES/NO with LLM understanding)
-        if _is_affirmative(text_body):
-            # User confirmed vehicle is in workshop
-            logger.info(f"Workshop: YES (LLM confirmed) - asking expected date for {user_phone}")
-            state_manager.update_context(user_phone, {"workshop_sub_step": WORKSHOP_EXPECTED_DATE})
-            return (
-                "Vehicle ke dobara operational hone ki expected date kya hai?\n\n"
+                "⚠️ Purani date nahi select kar sakte.\n"
+                "Kripya aaj ya future ki date dein.\n\n"
                 "Example: 20-06-2026"
             )
         
-        elif _is_negative(text_body):
-            # User said vehicle is NOT in workshop - show 7 other options
-            logger.info(f"Workshop: NO (LLM confirmed) - showing other options for {user_phone}")
-            state_manager.update_context(user_phone, {"workshop_sub_step": WORKSHOP_RESELECT})
-            return (
-                "Dhanyavaad.\n\n"
-                "Aisa lagta hai ki vehicle workshop mein nahi hai.\n\n"
-                "Kripya GPS inactive hone ka sahi reason select karein:\n\n"
-                "1️⃣ Accident\n"
-                "2️⃣ Battery Disconnect\n"
-                "3️⃣ GPS Removed\n"
-                "4️⃣ GPS Damaged\n"
-                "5️⃣ Vehicle Running but GPS Not Updating\n"
-                "6️⃣ Vehicle Standing\n"
-                "7️⃣ Other"
-            )
+        # Format date for display
+        expected_date_str = parsed_date.strftime("%d-%m-%Y")
         
-        else:
-            # Could not determine yes or no - ask again
-            logger.warning(f"Workshop: Could not determine yes/no from '{text_body[:50]}' for {user_phone}")
-            return "⚠️ Kripya batayein ki vehicle workshop mein hai ya nahi."
+        logger.info(f"Workshop: Case closed with expected date {expected_date_str} for {user_phone}")
+        
+        # Store final data
+        state_manager.update_context(user_phone, {
+            "workshop_expected_date": expected_date_str,
+            "case_status": "CLOSED"
+        })
+        
+        # Clear state (conversation complete)
+        state_manager.clear_state(user_phone)
+        
+        return (
+            "✅ Dhanyavaad.\n\n"
+            "Humne note kar liya hai ki vehicle filhaal workshop mein hai.\n\n"
+            f"Expected availability date: 📅 {expected_date_str}\n\n"
+            "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
+            "Agar vehicle operational hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
+            "🙏 Thank You\n\n"
+            "Case Status: Closed"
+        )
     
     # Unknown step
     logger.warning(f"Unknown step in workshop flow: {current_step}")

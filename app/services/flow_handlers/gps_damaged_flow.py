@@ -162,128 +162,6 @@ Respond with: SAME or DIFFERENT"""
         # Fallback
         return "theek" in normalized or "same" in normalized or "isi number" in normalized
 
-
-def _wants_gps_installation(text: str) -> bool:
-    """
-    Check if user wants to proceed with GPS installation service request using LLM.
-    Returns True if wants installation service.
-    """
-    from app.ai.groq_llm import generate_response
-    
-    normalized = text.strip().lower() if text else ""
-    
-    # Quick check for affirmative
-    if any(word in normalized for word in ["haan", "yes", "karwana", "chahte", "continue"]):
-        return True
-    
-    # Quick check for negative
-    if any(word in normalized for word in ["nahi", "no", "nahin", "mat"]) and not any(word in normalized for word in ["engineer", "service", "bhej"]):
-        return False
-    
-    # Use LLM for understanding
-    try:
-        prompt = f"""Determine if user wants to proceed with GPS installation service request.
-
-User was asked: "Kya aap abhi GPS installation ke liye service request continue karna chahte hain?"
-
-User replied: "{text}"
-
-Examples of YES (wants installation):
-- "haan"
-- "yes"
-- "karwana hai"
-- "chahte hain"
-- "continue karo"
-- "proceed"
-
-Examples of NO (does not want installation now):
-- "nahi"
-- "nahin"
-- "no"
-- "abhi nahi"
-- "baad mein"
-
-Respond with: YES or NO"""
-
-        response = generate_response(prompt).strip().upper()
-        
-        logger.info(f"LLM installation check: '{text[:50]}' -> {response}")
-        
-        return response == "YES"
-        
-    except Exception as e:
-        logger.error(f"LLM installation check failed: {str(e)}")
-        # Fallback
-        return "haan" in normalized or "yes" in normalized or "karwana" in normalized
-
-
-def _user_changed_mind_wants_service(text: str) -> bool:
-    """
-    Check if user changed their mind and now wants service engineer.
-    Used when user previously said NO but then asks for service.
-    """
-    from app.ai.groq_llm import generate_response
-    
-    normalized = text.strip().lower() if text else ""
-    
-    # Quick check for service request keywords
-    service_keywords = ["engineer", "service", "bhej", "karwana", "chahiye", "installation"]
-    if any(keyword in normalized for keyword in service_keywords):
-        return True
-    
-    # Use LLM for understanding
-    try:
-        prompt = f"""User was asked for expected date when GPS will be running.
-
-User replied: "{text}"
-
-Determine if user is asking for service engineer instead of providing a date.
-
-Examples of WANTS_SERVICE:
-- "nahi service engineer bhej do"
-- "engineer chahiye"
-- "installation karwana hai"
-- "service bhej do"
-- "abhi karwana hai"
-
-Examples of PROVIDING_DATE:
-- "20-06-2026"
-- "kal tak"
-- "2 din mein"
-- "next week"
-
-Respond with: WANTS_SERVICE or PROVIDING_DATE"""
-
-        response = generate_response(prompt).strip().upper()
-        
-        logger.info(f"LLM changed mind check: '{text[:50]}' -> {response}")
-        
-        return response == "WANTS_SERVICE"
-        
-    except Exception as e:
-        logger.error(f"LLM changed mind check failed: {str(e)}")
-        # Fallback
-        return any(keyword in normalized for keyword in ["engineer", "service", "bhej", "karwana"])
-
-
-def _validate_date(date_str: str) -> tuple:
-    """
-    Validate and parse date in DD-MM-YYYY or DD/MM/YYYY format.
-    Returns (parsed_date, None) if valid, (None, error_message) if invalid.
-    """
-    try:
-        # Try DD-MM-YYYY format
-        parsed = datetime.strptime(date_str.strip(), "%d-%m-%Y").date()
-        return parsed, None
-    except ValueError:
-        try:
-            # Try DD/MM/YYYY format
-            parsed = datetime.strptime(date_str.strip(), "%d/%m/%Y").date()
-            return parsed, None
-        except ValueError:
-            return None, "Invalid date format. Please use DD-MM-YYYY or DD/MM/YYYY (Example: 20-06-2026)"
-
-
 def _validate_phone(phone: str) -> bool:
     """Validate phone number"""
     import re
@@ -325,8 +203,6 @@ def _get_vehicle_number_from_db(user_phone: str, db: Session) -> str:
 
 
 # GPS Damaged sub-steps
-GPS_DAMAGED_CONFIRMATION = "GPS_DAMAGED_CONFIRMATION"
-GPS_DAMAGED_EXPECTED_DATE = "GPS_DAMAGED_EXPECTED_DATE"
 GPS_DAMAGED_LOCATION = "GPS_DAMAGED_LOCATION"
 GPS_DAMAGED_VISIT_DATETIME = "GPS_DAMAGED_VISIT_DATETIME"
 GPS_DAMAGED_CONTACT_CONFIRM = "GPS_DAMAGED_CONTACT_CONFIRM"
@@ -344,9 +220,7 @@ def handle_gps_damaged_flow(
     Handle GPS Damaged flow with LLM-driven conversational understanding.
     
     Flow:
-    Q1: Installation confirmation
-      - YES → Q2: Location → Q3: Date/Time → Q4: Contact → Q5: Additional Info → Service Request
-      - NO → Q2: Expected date when GPS will be running → Close case or engineer assignment
+    Q1: Location → Q2: Date/Time → Q3: Contact → Q4: Additional Info → Service Request
     """
     context = state_manager.get_context(user_phone)
     gps_sub_step = context.get("gps_damaged_sub_step")
@@ -365,8 +239,36 @@ def handle_gps_damaged_flow(
     if should_clarify(text_body):
         logger.info(f"GPS Damaged: User needs clarification at sub_step {gps_sub_step}")
         
-        context_explanation = get_context_explanation_for_step(current_step, gps_sub_step)
-        current_question = get_current_question_text(current_step, gps_sub_step)
+        # Provide context-specific clarification
+        if gps_sub_step == GPS_DAMAGED_LOCATION:
+            context_explanation = (
+                "Hum vehicle ki location isliye pooch rahe hain taaki service engineer ko pata rahe "
+                "kahan aana hai GPS inspection ke liye."
+            )
+            current_question = "Vehicle ki current location kya hai jahan inspection karwana hai?"
+        elif gps_sub_step == GPS_DAMAGED_VISIT_DATETIME:
+            context_explanation = (
+                "Hum pooch rahe hain ki inspection ke liye vehicle kab available rahegi "
+                "taaki service engineer ki visit schedule kar sakein."
+            )
+            current_question = "Vehicle inspection ke liye kab available rahegi?"
+        elif gps_sub_step == GPS_DAMAGED_CONTACT_CONFIRM:
+            context_explanation = (
+                "Hum confirm kar rahe hain ki kis number par aapse contact karna hai "
+                "service engineer ke visit ke liye."
+            )
+            current_question = "Kis number par aapse contact karna hai?"
+        elif gps_sub_step == GPS_DAMAGED_ADDITIONAL_INFO:
+            context_explanation = (
+                "Agar aapko koi additional information share karni hai inspection ke baare mein, "
+                "to bata sakte hain. Ye optional hai."
+            )
+            current_question = "Koi additional information share karna chahte hain?"
+        else:
+            context_explanation = (
+                "Hum GPS damage ki inspection arrange karne ke liye kuch basic information collect kar rahe hain."
+            )
+            current_question = "Kripya apna response dein."
         
         clarification = generate_clarification_response(
             user_message=text_body,
@@ -378,57 +280,7 @@ def handle_gps_damaged_flow(
     
     if current_step == ConversationStep.GPS_DAMAGED_LOCATION.value:
         
-        # Q2 (after NO): Expected date when GPS will be running
-        if gps_sub_step == GPS_DAMAGED_EXPECTED_DATE:
-            # First check if user changed their mind and wants service now
-            if _user_changed_mind_wants_service(text_body):
-                logger.info(f"GPS Damaged: User changed mind, wants service now")
-                state_manager.update_context(user_phone, {
-                    "gps_damaged_sub_step": GPS_DAMAGED_LOCATION
-                })
-                
-                return (
-                    "Bahut achha! 👍\n\n"
-                    "Main abhi service engineer arrange kar dunga.\n\n"
-                    "Kripya vehicle ki current location bata dijiye jahan inspection karwana hai.\n\n"
-                    "📍 Example: Kirti Nagar, Delhi"
-                )
-            
-            # Otherwise treat as date
-            parsed_date, error = _validate_date(text_body)
-            
-            if error:
-                return f"⚠️ {error}"
-            
-            if parsed_date < date.today():
-                return (
-                    "⚠️ Purani date nahi select kar sakte.\n"
-                    "Kripya aaj ya future ki date dein.\n\n"
-                    "Example: 20-06-2026"
-                )
-            
-            expected_date_str = parsed_date.strftime("%d-%m-%Y")
-            
-            logger.info(f"GPS Damaged: Installation declined, expected date {expected_date_str}")
-            
-            state_manager.update_context(user_phone, {
-                "gps_damaged_expected_date": expected_date_str,
-                "case_status": "PENDING_GPS_INSTALLATION"
-            })
-            
-            state_manager.clear_state(user_phone)
-            
-            return (
-                "✅ Dhanyavaad.\n\n"
-                "Humne note kar liya hai ki GPS device damage hai.\n\n"
-                f"Expected operational date: 📅 {expected_date_str}\n\n"
-                "Main aapko us date par dobara contact karunga installation ke liye.\n\n"
-                "Agar us se pehle koi urgency ho ya aap ready ho jaayen, to aap hume contact kar sakte hain.\n\n"
-                "🙏 Thank You\n\n"
-                "Case Status: Pending GPS Installation"
-            )
-        
-        # Q3 (after YES): Visit date/time (natural language accepted)
+        # Q2: Visit date/time (natural language accepted)
         if gps_sub_step == GPS_DAMAGED_VISIT_DATETIME:
             parsed_date, parsed_time, error = _parse_natural_datetime(text_body)
             
@@ -462,7 +314,7 @@ def handle_gps_damaged_flow(
                 "Agar koi doosra number use karna hai to woh number bhej dijiye."
             )
         
-        # Q4: Contact confirmation
+        # Q3: Contact confirmation
         if gps_sub_step == GPS_DAMAGED_CONTACT_CONFIRM:
             if _wants_same_contact(text_body):
                 # Use registered number
@@ -492,7 +344,7 @@ def handle_gps_damaged_flow(
                 "(Yeh optional hai.)"
             )
         
-        # Q5: Additional info (optional)
+        # Q4: Additional info (optional)
         if gps_sub_step == GPS_DAMAGED_ADDITIONAL_INFO:
             normalized = _normalize_text(text_body)
             
@@ -507,37 +359,7 @@ def handle_gps_damaged_flow(
             logger.info(f"GPS Damaged: Creating service request")
             return _create_gps_damaged_service_request(user_phone, state_manager, db, additional_info)
         
-        # Q1: Initial installation confirmation (or Location after confirmation)
-        if gps_sub_step == GPS_DAMAGED_CONFIRMATION:
-            if _wants_gps_installation(text_body):
-                # User wants to proceed with installation
-                logger.info(f"GPS Damaged: User confirmed installation service")
-                state_manager.update_context(user_phone, {
-                    "gps_damaged_sub_step": GPS_DAMAGED_LOCATION
-                })
-                
-                return (
-                    "Bahut achha! 👍\n\n"
-                    "Main aage ki process complete karke service engineer arrange kar dunga.\n\n"
-                    "Kripya vehicle ki current location bata dijiye jahan inspection karwana hai.\n\n"
-                    "📍 Example: Kirti Nagar, Delhi"
-                )
-            else:
-                # User does not want installation now
-                logger.info(f"GPS Damaged: User declined installation service")
-                state_manager.update_context(user_phone, {
-                    "gps_damaged_sub_step": GPS_DAMAGED_EXPECTED_DATE
-                })
-                
-                return (
-                    "Theek hai, koi baat nahi.\n\n"
-                    "Kripya bataiye ki GPS kab tak running ho jayega ya installation complete ho jayega?\n\n"
-                    "📅 Expected Date\n\n"
-                    "Example: 20-06-2026\n\n"
-                    "Note: Agar aap chahein to main aapko us date par contact kar sakta hoon installation ke liye."
-                )
-        
-        # Q2 (after YES): Location question
+        # Q1: Initial location question
         if len(text_body.strip()) < 5:
             return "⚠️ Kripya pura address dein."
         

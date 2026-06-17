@@ -124,12 +124,10 @@ def handle_battery_flow(
     db: Session
 ) -> str:
     """
-    Handle Battery Disconnect flow with LLM-driven conversational understanding.
+    Handle Battery Disconnect flow - directly asks for expected operational date.
     
     Flow:
-    Q1: Battery maintenance ke liye disconnect ki gayi hai? (LLM understands response)
-      - YES → Q2: Expected date → Close case
-      - NO → Ask to describe situation → Reclassify and route
+    Q1: Expected date when battery/vehicle will be operational → Close case
     
     Args:
         user_phone: User's phone number
@@ -141,25 +139,24 @@ def handle_battery_flow(
     Returns:
         Response message
     """
-    context = state_manager.get_context(user_phone)
-    battery_sub_step = context.get("battery_sub_step")
-    
     logger.info(
         f"Battery Flow: Processing message",
         extra={
             "phone": user_phone,
             "step": current_step,
-            "sub_step": battery_sub_step,
             "message_preview": text_body[:50]
         }
     )
     
     # Check if user needs clarification
     if should_clarify(text_body):
-        logger.info(f"Battery: User needs clarification at sub_step {battery_sub_step}")
+        logger.info(f"Battery: User needs clarification")
         
-        context_explanation = get_context_explanation_for_step(current_step, battery_sub_step)
-        current_question = get_current_question_text(current_step, battery_sub_step)
+        context_explanation = (
+            "Hum pooch rahe hain ki battery ya vehicle system dobara kab operational hoga "
+            "taaki hum record mein note kar sakein."
+        )
+        current_question = "Vehicle ya battery system dobara kab operational hoga?"
         
         clarification = generate_clarification_response(
             user_message=text_body,
@@ -170,90 +167,43 @@ def handle_battery_flow(
         return clarification
     
     if current_step == ConversationStep.BATTERY_MAINTENANCE_CONFIRMATION.value:
+        # Q1: Expected date when battery/vehicle will be operational
+        parsed_date, error = _validate_date(text_body)
         
-        # Q2: Expected date (after YES to battery maintenance)
-        if battery_sub_step == BATTERY_EXPECTED_DATE:
-            parsed_date, error = _validate_date(text_body)
-            
-            if error:
-                return f"⚠️ {error}"
-            
-            # Check if date is not in the past
-            if parsed_date < date.today():
-                return (
-                    "⚠️ Purani date nahi select kar sakte.\n"
-                    "Kripya aaj ya future ki date dein.\n\n"
-                    "Example: 20-06-2026"
-                )
-            
-            # Format date for display
-            expected_date_str = parsed_date.strftime("%d-%m-%Y")
-            
-            logger.info(f"Battery: Case closed with expected date {expected_date_str} for {user_phone}")
-            
-            # Store final data
-            state_manager.update_context(user_phone, {
-                "battery_expected_date": expected_date_str,
-                "case_status": "CLOSED"
-            })
-            
-            # Clear state (conversation complete)
-            state_manager.clear_state(user_phone)
-            
+        if error:
+            return f"⚠️ {error}"
+        
+        # Check if date is not in the past
+        if parsed_date < date.today():
             return (
-                "✅ Dhanyavaad.\n\n"
-                "Humne note kar liya hai ki battery maintenance/replacement ke kaaran vehicle inactive hai.\n\n"
-                f"Expected availability date: 📅 {expected_date_str}\n\n"
-                "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
-                "Agar battery reconnect hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
-                "🙏 Thank You\n\n"
-                "Case Status: Closed"
-            )
-        
-        # Q3: Reclassification (after NO to battery maintenance)
-        if battery_sub_step == BATTERY_DESCRIBE_SITUATION:
-            # User is describing the actual situation
-            # Use LLM to reclassify
-            from app.services.intent_classification_service import classify_customer_intent
-            
-            logger.info(f"Battery: Reclassifying from description: '{text_body[:50]}' for {user_phone}")
-            
-            new_issue_type, method = classify_customer_intent(text_body)
-            
-            logger.info(f"Battery reclassification: '{text_body}' -> {new_issue_type} using {method}")
-            
-            # Update context with new classification
-            state_manager.update_context(user_phone, {
-                "issue_classification": new_issue_type,
-                "reclassified_from": "BATTERY_DISCONNECT",
-                "battery_sub_step": None
-            })
-            
-            # Route to the correct flow
-            from app.services.service_engineer_flow_service import _route_to_flow_handler
-            return _route_to_flow_handler(user_phone, new_issue_type, state_manager, db)
-        
-        # Q1: Initial battery maintenance confirmation (LLM-driven understanding)
-        if _is_battery_maintenance(text_body):
-            # User confirmed battery is disconnected for maintenance
-            logger.info(f"Battery: YES (LLM confirmed) - asking expected date for {user_phone}")
-            state_manager.update_context(user_phone, {"battery_sub_step": BATTERY_EXPECTED_DATE})
-            
-            return (
-                "Vehicle ya battery system dobara kab operational hoga?\n\n"
+                "⚠️ Purani date nahi select kar sakte.\n"
+                "Kripya aaj ya future ki date dein.\n\n"
                 "Example: 20-06-2026"
             )
         
-        else:
-            # Battery maintenance is NOT the issue - ask user to describe situation
-            logger.info(f"Battery: NO (LLM confirmed) - asking for situation description for {user_phone}")
-            state_manager.update_context(user_phone, {"battery_sub_step": BATTERY_DESCRIBE_SITUATION})
-            
-            return (
-                "Dhanyavaad. 🙏\n\n"
-                "Aisa lagta hai ki battery disconnect issue nahi hai.\n\n"
-                "Kripya thoda aur bataiye vehicle ki vartamaan sthiti kya hai."
-            )
+        # Format date for display
+        expected_date_str = parsed_date.strftime("%d-%m-%Y")
+        
+        logger.info(f"Battery: Case closed with expected date {expected_date_str} for {user_phone}")
+        
+        # Store final data
+        state_manager.update_context(user_phone, {
+            "battery_expected_date": expected_date_str,
+            "case_status": "CLOSED"
+        })
+        
+        # Clear state (conversation complete)
+        state_manager.clear_state(user_phone)
+        
+        return (
+            "✅ Dhanyavaad.\n\n"
+            "Humne note kar liya hai ki battery maintenance/replacement ke kaaran vehicle inactive hai.\n\n"
+            f"Expected availability date: 📅 {expected_date_str}\n\n"
+            "Is samay kisi service engineer ki avashyakta nahi hai.\n\n"
+            "Agar battery reconnect hone ke baad bhi GPS issue rahta hai, to aap support request raise kar sakte hain.\n\n"
+            "🙏 Thank You\n\n"
+            "Case Status: Closed"
+        )
     
     # Unknown step
     logger.warning(f"Unknown step in battery flow: {current_step}")

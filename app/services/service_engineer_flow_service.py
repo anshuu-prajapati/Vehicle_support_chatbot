@@ -148,40 +148,43 @@ def _route_to_flow_handler(
     if issue_type == "WORKSHOP":
         state_manager.set_state(user_phone, ConversationStep.WORKSHOP_CONFIRMATION)
         return (
-            "Kya vehicle filhaal workshop/service center mein repair ya maintenance ke liye hai?"
+            "Dhanyavaad. 🙏\n\n"
+            "Vehicle ke dobara operational hone ki expected date kya hai?"
         )
     
     elif issue_type == "ACCIDENT":
         state_manager.set_state(user_phone, ConversationStep.ACCIDENT_WORKSHOP_CONFIRMATION)
         return (
             "Dhanyavaad. 🙏\n\n"
-            "Kya vehicle filhaal accident ke baad workshop ya repair center mein hai?"
+            "Kya vehicle filhaal workshop ya repair center mein hai?"
         )
     
     elif issue_type == "BATTERY_DISCONNECT":
         state_manager.set_state(user_phone, ConversationStep.BATTERY_MAINTENANCE_CONFIRMATION)
         return (
             "Dhanyavaad. 🙏\n\n"
-            "Kya battery maintenance, replacement ya repair ke liye disconnect ki gayi hai?"
+            "Vehicle ya battery system dobara kab operational hoga?\n\n"
+            "Example: 20-06-2026"
         )
     
     elif issue_type == "GPS_REMOVED":
         state_manager.set_state(user_phone, ConversationStep.GPS_REMOVED_REINSTALL_DATE)
         return (
             "Dhanyavaad. 🙏\n\n"
-            "Kya GPS device maintenance ya repair ke liye remove kiya gaya hai?"
+            "GPS re-installation kab karwana hai?\n\n"
+            "Example: 20-06-2026"
         )
     
     elif issue_type == "GPS_DAMAGED":
         state_manager.set_state(user_phone, ConversationStep.GPS_DAMAGED_LOCATION)
         state_manager.update_context(user_phone, {
-            "gps_damaged_sub_step": "GPS_DAMAGED_CONFIRMATION"
+            "gps_damaged_sub_step": "GPS_DAMAGED_LOCATION"
         })
         return (
             "Dhanyavaad. 🙏\n\n"
             "Humne note kar liya hai ki GPS device damage ho gaya hai.\n\n"
-            "Kya aap abhi GPS installation ke liye service request continue karna chahte hain?\n\n"
-            "Main aage ki process complete karke service engineer arrange kar sakta hoon."
+            "Kripya vehicle ki current location bata dijiye jahan inspection karwana hai.\n\n"
+            "📍 Example: Kirti Nagar, Delhi"
         )
     
     elif issue_type == "VEHICLE_RUNNING":
@@ -196,11 +199,15 @@ def _route_to_flow_handler(
     elif issue_type == "VEHICLE_STANDING":
         state_manager.set_state(user_phone, ConversationStep.VEHICLE_STANDING_DURATION)
         return (
-            "Vehicle kitne samay se khadi hai?\n"
-            "For how long has the vehicle been standing?\n\n"
-            "1️⃣ 24 ghante se kam / Less than 24 hrs\n"
-            "2️⃣ 24-48 ghante / 24-48 hrs\n"
-            "3️⃣ 48 ghante se adhik / More than 48 hrs"
+            "Dhanyavaad. 🙏\n\n"
+            "Kya aap bata sakte hain vehicle kab se standing condition mein hai?\n\n"
+            "📅 Examples:\n"
+            "• Aaj se\n"
+            "• Kal se\n"
+            "• 1 din se\n"
+            "• 2 din se\n"
+            "• 3 din se\n"
+            "• Ek hafte se"
         )
     
     else:  # UNKNOWN or OTHER
