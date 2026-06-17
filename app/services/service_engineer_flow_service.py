@@ -174,11 +174,14 @@ def _route_to_flow_handler(
     
     elif issue_type == "GPS_DAMAGED":
         state_manager.set_state(user_phone, ConversationStep.GPS_DAMAGED_LOCATION)
+        state_manager.update_context(user_phone, {
+            "gps_damaged_sub_step": "GPS_DAMAGED_CONFIRMATION"
+        })
         return (
-            "Vehicle ki current location kya hai?\n"
-            "What is the current vehicle location?\n\n"
-            "Kripya pura address dein.\n"
-            "Please provide full address."
+            "Dhanyavaad. 🙏\n\n"
+            "Humne note kar liya hai ki GPS device damage ho gaya hai.\n\n"
+            "Kya aap abhi GPS installation ke liye service request continue karna chahte hain?\n\n"
+            "Main aage ki process complete karke service engineer arrange kar sakta hoon."
         )
     
     elif issue_type == "VEHICLE_RUNNING":
