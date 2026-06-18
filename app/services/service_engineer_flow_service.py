@@ -409,6 +409,19 @@ def _handle_service_engineer_message_internal(
     # === GENERAL CONVERSATION LAYER ===
     # Check if this is general conversation (questions, greetings, clarifications)
     # BEFORE routing to issue classification
+    
+    logger.info(
+        f"🔍 FLOW ENTRY POINT - Processing message for {user.phone_number}",
+        extra={
+            "user_phone": user.phone_number,
+            "message": text_body,
+            "message_normalized": normalized,
+            "current_state": state.current_step if state else "NO_STATE",
+            "has_context": bool(context),
+            "vehicle_number": vehicle_number
+        }
+    )
+    
     is_general, general_response = handle_general_conversation(
         text=text_body,
         current_step=state.current_step if state else None,
@@ -418,15 +431,25 @@ def _handle_service_engineer_message_internal(
     )
     
     if is_general:
-        logger.info(
-            f"Handled as general conversation for {user.phone_number}",
+        logger.warning(
+            f"⚠️ GENERAL CONVERSATION DETECTED - Intercepted by general_conversation_handler",
             extra={
-                "message": text_body[:50],
-                "current_step": state.current_step if state else "None"
+                "user_phone": user.phone_number,
+                "message": text_body[:100],
+                "current_step": state.current_step if state else "None",
+                "response_preview": general_response[:100] if general_response else "None"
             }
         )
         # Return general response WITHOUT changing conversation state
         return general_response
+    
+    logger.info(
+        f"✅ NOT general conversation - proceeding to intent classification",
+        extra={
+            "user_phone": user.phone_number,
+            "message": text_body[:50]
+        }
+    )
     
     # === END GENERAL CONVERSATION LAYER ===
     
@@ -536,18 +559,62 @@ def _handle_service_engineer_message_internal(
                 "Samajhne ke liye kripya thoda aur detail mein batayein ki vehicle ya GPS ke saath kya issue aa raha hai.\n\n"
                 "Aap normal language mein bata sakte hain."
             )
-    
-    # Handle greetings
-    if greeting_service.is_greeting(normalized):
-        logger.info(f"Greeting detected from {user.phone_number}")
-        greeting_service.route_to_main_menu(user.phone_number)
-        return greeting_service.send_welcome(user.name)
+        
+        # If we reach here, it's not a number, not natural language we could classify
+        # Ask user to provide proper input
+        logger.warning(
+            f"User {user.phone_number} sent unclassifiable input at MAIN_MENU: '{text_body[:50]}'",
+            extra={"phone": user.phone_number, "message": text_body[:100]}
+        )
+        
+        return (
+            "⚠️ कृपया दिए गए विकल्पों में से चुनें या अपनी समस्या स्पष्ट रूप से बताएं।\n"
+            "⚠️ Please choose from the given options or clearly describe your issue.\n\n"
+            "विकल्प / Options:\n"
+            "1️⃣ Workshop / Service Center\n"
+            "2️⃣ Accident\n"
+            "3️⃣ Battery Disconnect\n"
+            "4️⃣ GPS Removed\n"
+            "5️⃣ GPS Damaged\n"
+            "6️⃣ Vehicle Running but GPS Not Updating\n"
+            "7️⃣ Vehicle Standing\n"
+            "8️⃣ Other\n\n"
+            "या अपनी समस्या अपने शब्दों में बताएं।\n"
+            "Or describe your problem in your own words."
+        )
     
     # Check if we have an active state
     if not state:
-        # No state - send welcome
-        greeting_service.route_to_main_menu(user.phone_number)
-        return greeting_service.send_welcome(user.name)
+        # No state and not at MAIN_MENU - this shouldn't happen
+        # Try to classify and route without welcome message
+        logger.warning(f"No state found for user {user.phone_number}, attempting classification")
+        
+        issue_type, method = classify_customer_intent(text_body)
+        
+        if issue_type != "UNKNOWN":
+            logger.info(
+                f"Classified message without state: {issue_type}",
+                extra={"phone": user.phone_number, "message": text_body[:100]}
+            )
+            
+            state_manager.update_context(user.phone_number, {
+                "issue_classification": issue_type,
+                "classification_method": f"NLP_{method}_NO_STATE",
+                "customer_response": text_body
+            })
+            
+            return _route_to_flow_handler(user.phone_number, issue_type, state_manager, db)
+        
+        # Could not classify - ask for proper input
+        return (
+            "⚠️ कृपया अपनी समस्या स्पष्ट रूप से बताएं।\n"
+            "⚠️ Please describe your issue clearly.\n\n"
+            "उदाहरण / Examples:\n"
+            "• GPS खराब हो गया है / GPS is damaged\n"
+            "• गाड़ी चल रही है पर tracking नहीं आ रही / Vehicle running but no tracking\n"
+            "• GPS निकाल दिया है / GPS has been removed\n"
+            "• गाड़ी workshop में है / Vehicle is in workshop"
+        )
     
     current_step = state.current_step
     

@@ -50,9 +50,15 @@ def is_general_conversation(text: str) -> bool:
     """
     normalized = _normalize_text(text)
     
+    logger.debug(
+        f"🔍 is_general_conversation() - Checking message",
+        extra={"original": text, "normalized": normalized}
+    )
+    
     # Quick check for very short acknowledgments
     short_acknowledgments = ["ok", "okay", "k", "hmm", "hm", "achha", "theek", "thik", "yes", "haan", "ji"]
     if normalized in short_acknowledgments:
+        logger.debug(f"✅ SHORT ACKNOWLEDGMENT detected: {normalized}")
         return True
     
     # Priority check for general conversation patterns
@@ -73,12 +79,18 @@ def is_general_conversation(text: str) -> bool:
         "kyu bata", "kyun bata", "why tell",
         # Thanks/greetings
         "thank", "thanks", "dhanyavad", "shukriya",
-        "hello", "hi ", "hey ", "namaste", "namaskar",
+        "hello", "hey ", "namaste", "namaskar",
     ]
     
     for pattern in priority_general_patterns:
         if pattern in normalized:
+            logger.warning(
+                f"⚠️ PRIORITY GENERAL PATTERN MATCHED: '{pattern}' in '{normalized}'",
+                extra={"pattern": pattern, "text": text}
+            )
             return True
+    
+    logger.debug(f"✅ NO PRIORITY GENERAL PATTERNS matched")
     
     # Exclude patterns - these are NOT general conversation
     # Status/location responses
@@ -95,7 +107,13 @@ def is_general_conversation(text: str) -> bool:
     if len(words) >= 2:
         for exclude in status_exclude:
             if exclude in normalized:
+                logger.info(
+                    f"✅ EXCLUDE PATTERN MATCHED: '{exclude}' in '{normalized}' - NOT GENERAL CONVERSATION",
+                    extra={"pattern": exclude, "text": text}
+                )
                 return False
+    
+    logger.debug(f"✅ NO EXCLUDE PATTERNS matched, checking remaining patterns")
     
     # Vehicle clarification questions (not status)
     vehicle_patterns = [
@@ -135,8 +153,16 @@ def is_general_conversation(text: str) -> bool:
     
     for pattern in remaining_patterns:
         if pattern in normalized:
+            logger.warning(
+                f"⚠️ REMAINING PATTERN MATCHED: '{pattern}' in '{normalized}'",
+                extra={"pattern": pattern, "text": text}
+            )
             return True
     
+    logger.info(
+        f"✅ NO GENERAL CONVERSATION PATTERNS matched - NOT general conversation",
+        extra={"text": text}
+    )
     return False
 
 
@@ -193,7 +219,7 @@ def get_conversation_type(text: str) -> str:
         return "AUTOMATED"
     
     # Greeting
-    if any(p in normalized for p in ["hello", "hi", "hey", "namaste", "namaskar", "good morning", "good afternoon", "good evening"]):
+    if any(p in normalized for p in ["hello", "hey", "namaste", "namaskar", "good morning", "good afternoon", "good evening"]):
         return "GREETING"
     
     # Thanks
@@ -372,20 +398,36 @@ def handle_general_conversation(
         - If is_general_conversation is False, response_message is None
     """
     
+    logger.info(
+        f"🔍 GENERAL CONVERSATION CHECK - Checking if message is general conversation",
+        extra={
+            "text": text,
+            "text_normalized": _normalize_text(text),
+            "current_step": current_step
+        }
+    )
+    
     if not is_general_conversation(text):
+        logger.info(
+            f"✅ NOT GENERAL CONVERSATION - Message is NOT general conversation, will proceed to intent classification",
+            extra={"text": text[:100]}
+        )
         return False, None
     
-    logger.info(
-        f"General conversation detected: '{text[:50]}'",
+    logger.warning(
+        f"⚠️ GENERAL CONVERSATION DETECTED - Message identified as general conversation",
         extra={"text": text[:100]}
     )
     
     # Get conversation type
     conv_type = get_conversation_type(text)
     
-    logger.info(
-        f"Conversation type: {conv_type}",
-        extra={"type": conv_type}
+    logger.warning(
+        f"⚠️ CONVERSATION TYPE: {conv_type}",
+        extra={
+            "type": conv_type,
+            "text": text[:100]
+        }
     )
     
     # Get pending question
@@ -397,6 +439,14 @@ def handle_general_conversation(
         vehicle_number=vehicle_number,
         last_location=last_location,
         pending_question=pending_question
+    )
+    
+    logger.warning(
+        f"⚠️ GENERAL CONVERSATION RESPONSE GENERATED",
+        extra={
+            "conv_type": conv_type,
+            "response_preview": response[:150]
+        }
     )
     
     return True, response
