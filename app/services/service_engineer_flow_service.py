@@ -453,6 +453,289 @@ def _handle_service_engineer_message_internal(
     
     # === END GENERAL CONVERSATION LAYER ===
     
+    # === ORCHESTRATOR INTEGRATION - FIRST REPLY AFTER GPS ALERT ===
+    # Use orchestrator as first intelligence layer for initial GPS alert replies
+    # This provides smart entity extraction and context handling
+    # CRITICAL: Once orchestrator starts handling a conversation, it continues
+    # until ticket is created or conversation is reset
+    orchestrator_is_active = context and context.get("orchestrator_active")
+    orchestrator_should_start = not state or state.current_step == ConversationStep.MAIN_MENU.value
+    
+    if orchestrator_should_start or orchestrator_is_active:
+        if orchestrator_is_active:
+            logger.info(
+                f"🎯 ORCHESTRATOR CONTINUATION - Processing follow-up message",
+                extra={
+                    "user_phone": user.phone_number,
+                    "message": text_body,
+                    "vehicle_number": vehicle_number,
+                    "orchestrator_active": True
+                }
+            )
+        else:
+            logger.info(
+                f"🎯 ORCHESTRATOR ENTRY POINT - First reply after GPS alert",
+                extra={
+                    "user_phone": user.phone_number,
+                    "message": text_body,
+                    "vehicle_number": vehicle_number
+                }
+            )
+        
+        # Try orchestrator first for intelligent processing
+        try:
+            from app.services.service_request_orchestrator import process_gps_alert_reply
+            
+            logger.info(f"[ORCHESTRATOR] Processing message through orchestrator")
+            
+            orchestrator_response, service_request = process_gps_alert_reply(
+                message=text_body,
+                vehicle_number=vehicle_number or "UNKNOWN",
+                user_phone=user.phone_number,
+                conversation_history=None,
+                db=db
+            )
+            
+            # Log orchestrator results
+            logger.info(
+                f"[ORCHESTRATOR] Intent detected: {service_request.get('issue_type')}",
+                extra={
+                    "user_phone": user.phone_number,
+                    "intent": service_request.get('issue_type'),
+                    "case_closed": service_request.get('case_closed'),
+                    "service_required": service_request.get('service_required'),
+                    "ticket_created": service_request.get('ticket_created')
+                }
+            )
+            
+            logger.info(
+                f"[ORCHESTRATOR] Extracted entities",
+                extra={
+                    "user_phone": user.phone_number,
+                    "origin_city": service_request.get('origin_city'),
+                    "destination_city": service_request.get('destination_city'),
+                    "service_location": service_request.get('service_location'),
+                    "service_date": service_request.get('service_date'),
+                    "phone": service_request.get('phone'),
+                    "contact_person": service_request.get('contact_person')
+                }
+            )
+            
+            # Determine missing fields
+            missing_fields = []
+            if not service_request.get('service_location') and not service_request.get('destination_city'):
+                missing_fields.append('location')
+            if not service_request.get('service_date'):
+                missing_fields.append('service_date')
+            if not service_request.get('phone'):
+                missing_fields.append('phone')
+            
+            logger.info(
+                f"[ORCHESTRATOR] Missing fields: {missing_fields}",
+                extra={
+                    "user_phone": user.phone_number,
+                    "missing_fields": missing_fields
+                }
+            )
+            
+            # Update context with orchestrator data
+            state_manager.update_context(user.phone_number, {
+                "orchestrator_service_request": service_request,
+                "orchestrator_active": True,
+                "vehicle_number": vehicle_number or service_request.get('vehicle_number')
+            })
+            
+            # Route based on orchestrator decision
+            if service_request.get('case_closed'):
+                # Case closed - use orchestrator response, but also route to existing handler
+                issue_type = service_request.get('issue_type', 'UNKNOWN')
+                
+                logger.info(
+                    f"[ORCHESTRATOR] ROUTING DECISION: Case closed - {issue_type}",
+                    extra={
+                        "user_phone": user.phone_number,
+                        "issue_type": issue_type,
+                        "case_closed": True
+                    }
+                )
+                
+                # Map orchestrator case types to existing flow types
+                case_type_map = {
+                    "workshop": "WORKSHOP",
+                    "accident": "ACCIDENT",
+                    "battery_disconnect": "BATTERY_DISCONNECT",
+                    "gps_removed_maintenance": "GPS_REMOVED"
+                }
+                
+                flow_type = case_type_map.get(issue_type, "UNKNOWN")
+                
+                # Store classification in context
+                state_manager.update_context(user.phone_number, {
+                    "issue_classification": flow_type,
+                    "classification_method": "ORCHESTRATOR_CASE_CLOSED",
+                    "customer_response": text_body
+                })
+                
+                # Return orchestrator response (already handles case closed scenarios)
+                return orchestrator_response
+            
+            elif service_request.get('service_required'):
+                issue_type = service_request.get('issue_type', 'other_gps_issue')
+                
+                # If ticket created, route to existing service flow with extracted entities
+                if service_request.get('ticket_created'):
+                    logger.info(
+                        f"[ORCHESTRATOR] ROUTING DECISION: Ticket ready - {issue_type}",
+                        extra={
+                            "user_phone": user.phone_number,
+                            "issue_type": issue_type,
+                            "ticket_created": True,
+                            "all_fields_collected": True
+                        }
+                    )
+                    
+                    # === CREATE ACTUAL TICKET ===
+                    try:
+                        # Prepare ticket data from service request
+                        location = (service_request.get('service_location') 
+                                   or service_request.get('destination_city')
+                                   or service_request.get('origin_city')
+                                   or "Location not specified")
+                        
+                        # Build problem description with all details
+                        # (dates/times from orchestrator are natural language like "kal", "3 PM")
+                        problem_desc = f"{issue_type} - {service_request.get('issue_type', 'GPS Issue')}"
+                        if service_request.get('service_date'):
+                            problem_desc += f" | Service Date: {service_request.get('service_date')}"
+                        if service_request.get('service_time'):
+                            problem_desc += f" | Time: {service_request.get('service_time')}"
+                        
+                        # Create the ticket
+                        # Note: visit_date/visit_time expect Date/Time objects, but orchestrator
+                        # returns natural language strings ("kal", "3 PM"). We pass None to these
+                        # fields and include the info in problem description instead.
+                        ticket = create_service_request_ticket(
+                            vehicle_number=vehicle_number or "UNKNOWN",
+                            issue_type=issue_type.upper(),
+                            customer_phone=user.phone_number,
+                            location=location,
+                            visit_date=None,  # Orchestrator returns strings like "kal", not Date objects
+                            visit_time=None,  # Orchestrator returns strings like "3 PM", not Time objects
+                            driver_mobile=service_request.get('phone'),
+                            driver_name=service_request.get('contact_person'),
+                            owner_mobile=service_request.get('phone'),
+                            problem=problem_desc
+                        )
+                        
+                        logger.info(
+                            f"[ORCHESTRATOR] Ticket created successfully",
+                            extra={
+                                "user_phone": user.phone_number,
+                                "ticket_number": ticket.ticket_number,
+                                "ticket_id": ticket.id
+                            }
+                        )
+                        
+                        # Update context with ticket info
+                        state_manager.update_context(user.phone_number, {
+                            "service_request_id": ticket.ticket_number,
+                            "ticket_id": ticket.id
+                        })
+                        
+                        # === ENHANCED RESPONSE WITH TICKET ID ===
+                        # Build response with ticket details
+                        enhanced_response = (
+                            f"✅ Service request create kar di gayi hai!\n\n"
+                            f"📋 *Ticket Details:*\n"
+                            f"🎫 Ticket ID: *{ticket.ticket_number}*\n"
+                            f"📍 Location: {location}\n"
+                            f"📅 Service Date: {service_request.get('service_date', 'As per availability')}\n"
+                        )
+                        
+                        if service_request.get('service_time'):
+                            enhanced_response += f"🕐 Time: {service_request.get('service_time')}\n"
+                        
+                        enhanced_response += f"📞 Contact: {service_request.get('phone', user.phone_number)}\n\n"
+                        
+                        # Check if engineer is already assigned (future enhancement)
+                        if ticket.assigned_engineer:
+                            enhanced_response += (
+                                f"👤 *Assigned Engineer:*\n"
+                                f"Name: {ticket.assigned_engineer.name}\n"
+                                f"Phone: {ticket.assigned_engineer.phone_number}\n\n"
+                            )
+                        else:
+                            enhanced_response += (
+                                f"👤 Engineer assignment jald ho jayega.\n\n"
+                            )
+                        
+                        enhanced_response += (
+                            f"Engineer aapse jald sampark karega.\n"
+                            f"Koi sawal ho toh Ticket ID {ticket.ticket_number} ke saath humse sampark karein.\n\n"
+                            f"Dhanyavaad!"
+                        )
+                        
+                        # Clear orchestrator state after successful ticket creation
+                        state_manager.clear_state(user.phone_number)
+                        
+                        return enhanced_response
+                        
+                    except Exception as ticket_error:
+                        logger.error(
+                            f"[ORCHESTRATOR] Ticket creation failed: {str(ticket_error)}",
+                            extra={
+                                "user_phone": user.phone_number,
+                                "error": str(ticket_error)
+                            },
+                            exc_info=True
+                        )
+                        
+                        # Fallback to orchestrator response if ticket creation fails
+                        return (
+                            orchestrator_response + 
+                            "\n\n⚠️ Ticket ID generate mein issue hai. "
+                            "Support team se sampark kiya ja raha hai."
+                        )
+                    # === END TICKET CREATION ===
+                
+                else:
+                    # Still collecting information - return orchestrator question
+                    logger.info(
+                        f"[ORCHESTRATOR] ROUTING DECISION: Collecting information - {issue_type}",
+                        extra={
+                            "user_phone": user.phone_number,
+                            "issue_type": issue_type,
+                            "missing_fields": missing_fields
+                        }
+                    )
+                    
+                    # Return orchestrator response (asking for missing fields)
+                    return orchestrator_response
+            
+            else:
+                # Orchestrator couldn't determine - fall through to existing logic
+                logger.info(
+                    f"[ORCHESTRATOR] ROUTING DECISION: Unclear - falling back to existing logic",
+                    extra={
+                        "user_phone": user.phone_number,
+                        "orchestrator_unclear": True
+                    }
+                )
+        
+        except Exception as e:
+            # Orchestrator failed - fall through to existing logic
+            logger.warning(
+                f"[ORCHESTRATOR] Failed to process, falling back to existing logic: {str(e)}",
+                extra={
+                    "user_phone": user.phone_number,
+                    "error": str(e)
+                },
+                exc_info=True
+            )
+    
+    # === END ORCHESTRATOR INTEGRATION ===
+    # Continue with existing logic as fallback
+    
     # Handle initial status selection (numeric OR natural language)
     # This applies when user has NO active conversation (or is at MAIN_MENU)
     if not state or state.current_step == ConversationStep.MAIN_MENU.value:
