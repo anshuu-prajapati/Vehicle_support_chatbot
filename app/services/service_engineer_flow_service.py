@@ -14,6 +14,7 @@ from app.services.intent_classification_service import classify_customer_intent,
 from app.services.greeting_service import GreetingService
 from app.services.vehicle_status_service import VehicleStatusService
 from app.services.ticket_service import create_service_request_ticket, assign_engineer, update_ticket
+from app.services.general_conversation_handler import handle_general_conversation
 from app.db.models.vehicle import Vehicle
 from app.db.models.user import User
 
@@ -213,10 +214,8 @@ def _route_to_flow_handler(
     else:  # UNKNOWN or OTHER
         state_manager.set_state(user_phone, ConversationStep.OTHER_ISSUE_DESCRIPTION)
         return (
-            "Kripya issue thoda aur detail mein batayein.\n"
-            "Please explain the issue in more detail.\n\n"
-            "Yeh humein sahi tarike se madad karne mein sahayata karega.\n"
-            "This will help us assist you correctly."
+            "Samajhne ke liye kripya thoda aur detail mein batayein ki vehicle ya GPS ke saath kya issue aa raha hai.\n\n"
+            "Aap normal language mein bata sakte hain."
         )
 
 
@@ -398,6 +397,38 @@ def _handle_service_engineer_message_internal(
     
     # Get current state
     state = state_manager.get_state(user.phone_number)
+    context = state_manager.get_context(user.phone_number)
+    
+    # Get vehicle information for context
+    vehicle_number = context.get("vehicle_number") if context else None
+    if not vehicle_number:
+        vehicle_number = _get_vehicle_number_for_user(user.phone_number, db)
+    
+    last_location = context.get("last_location") if context else None
+    
+    # === GENERAL CONVERSATION LAYER ===
+    # Check if this is general conversation (questions, greetings, clarifications)
+    # BEFORE routing to issue classification
+    is_general, general_response = handle_general_conversation(
+        text=text_body,
+        current_step=state.current_step if state else None,
+        context=context,
+        vehicle_number=vehicle_number,
+        last_location=last_location
+    )
+    
+    if is_general:
+        logger.info(
+            f"Handled as general conversation for {user.phone_number}",
+            extra={
+                "message": text_body[:50],
+                "current_step": state.current_step if state else "None"
+            }
+        )
+        # Return general response WITHOUT changing conversation state
+        return general_response
+    
+    # === END GENERAL CONVERSATION LAYER ===
     
     # Handle initial status selection (numeric OR natural language)
     # This applies when user has NO active conversation (or is at MAIN_MENU)
@@ -433,6 +464,35 @@ def _handle_service_engineer_message_internal(
         # Not a number - check if it's a natural language response
         # Skip if it's a greeting (will be handled below)
         if not greeting_service.is_greeting(normalized):
+            # Check if user is indicating they don't know
+            dont_know_keywords = [
+                "pta ni", "pata nahi", "malum nahi", "not sure", "no idea",
+                "cant say", "can't say", "nahi pata", "samajh nahi", "confused",
+                "mujhe nahi pata", "kya issue hai", "pata nahi kya", "dont know", "don't know"
+            ]
+            
+            is_dont_know = any(keyword in normalized for keyword in dont_know_keywords)
+            
+            if is_dont_know:
+                logger.info(f"User {user.phone_number} doesn't know the issue - entering clarification mode")
+                
+                # Store in context and route to OTHER/clarification
+                state_manager.update_context(user.phone_number, {
+                    "issue_classification": "UNKNOWN",
+                    "classification_method": "DONT_KNOW",
+                    "customer_response": text_body,
+                    "clarification_needed": True
+                })
+                
+                state_manager.set_state(user.phone_number, ConversationStep.OTHER_ISSUE_DESCRIPTION)
+                
+                return (
+                    "Koi baat nahi. 🙏\n\n"
+                    "Kripya thoda aur bataiye:\n\n"
+                    "Vehicle abhi chal rahi hai, khadi hai, workshop mein hai ya GPS se judi koi samasya aa rahi hai?\n\n"
+                    "Aap normal language mein bata sakte hain."
+                )
+            
             # Try to classify the user's natural language input
             logger.info(f"User {user.phone_number} sent natural language: '{text_body[:50]}...'")
             
@@ -460,18 +520,21 @@ def _handle_service_engineer_message_internal(
                 # Route directly to flow
                 return _route_to_flow_handler(user.phone_number, issue_type, state_manager, db)
             
-            # Classification returned UNKNOWN - ask user to select from options
-            logger.info(f"Could not classify '{text_body[:50]}' - asking for selection")
+            # Classification returned UNKNOWN - route to clarification (OTHER flow)
+            logger.info(f"Could not classify '{text_body[:50]}' - routing to clarification mode")
+            
+            state_manager.update_context(user.phone_number, {
+                "issue_classification": "UNKNOWN",
+                "classification_method": "UNCLEAR",
+                "customer_response": text_body,
+                "clarification_needed": True
+            })
+            
+            state_manager.set_state(user.phone_number, ConversationStep.OTHER_ISSUE_DESCRIPTION)
+            
             return (
-                "⚠️ Kripya option number select karein.\n\n"
-                "1️⃣ Workshop / Service Center\n"
-                "2️⃣ Accident\n"
-                "3️⃣ Battery Disconnect\n"
-                "4️⃣ GPS Removed\n"
-                "5️⃣ GPS Damaged\n"
-                "6️⃣ Vehicle Running but GPS Not Updating\n"
-                "7️⃣ Vehicle Standing\n"
-                "8️⃣ Other"
+                "Samajhne ke liye kripya thoda aur detail mein batayein ki vehicle ya GPS ke saath kya issue aa raha hai.\n\n"
+                "Aap normal language mein bata sakte hain."
             )
     
     # Handle greetings

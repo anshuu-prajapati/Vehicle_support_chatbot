@@ -339,17 +339,32 @@ def handle_vehicle_running_flow(
             return _create_vehicle_running_service_request(user_phone, state_manager, db, additional_info)
         
         # Q1: Initial location question
-        if len(text_body.strip()) < 5:
-            return "⚠️ Kripya pura address dein."
+        from app.services.location_extractor import extract_location_info, is_valid_location, format_location_for_storage
         
-        logger.info(f"Vehicle Running: Location saved")
+        if not is_valid_location(text_body):
+            return "⚠️ Kripya location bataiye."
+        
+        # Extract location information
+        location_info = extract_location_info(text_body)
+        location_for_storage = format_location_for_storage(location_info)
+        
+        logger.info(f"Vehicle Running: Location saved - {location_for_storage}")
         state_manager.update_context(user_phone, {
-            "vr_location": text_body.strip(),
+            "vr_location": location_for_storage,
+            "vr_location_info": location_info,  # Store full info
             "vr_sub_step": VR_VISIT_DATETIME
         })
         
+        # If vehicle is moving, acknowledge it
+        if location_info.get("is_moving") and location_info.get("destination"):
+            current = location_info.get("current_location")
+            destination = location_info.get("destination")
+            location_msg = f"Samajh gaya, vehicle {current} se {destination} ja rahi hai. 📍\n\n"
+        else:
+            location_msg = "Dhanyavaad. 📍\n\n"
+        
         return (
-            "Dhanyavaad. 📍\n\n"
+            location_msg +
             "Vehicle inspection ke liye kab available rahegi?\n\n"
             "Aap date aur time normal language mein bata sakte hain.\n\n"
             "Examples:\n"
